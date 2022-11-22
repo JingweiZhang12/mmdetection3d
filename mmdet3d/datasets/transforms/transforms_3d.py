@@ -691,7 +691,11 @@ class GlobalRotScaleTrans(BaseTransform):
             and `gt_bboxes_3d` is updated in the result dict.
         """
         translation_std = np.array(self.translation_std, dtype=np.float32)
-        trans_factor = np.random.normal(scale=translation_std, size=3).T
+        # trans_factor = np.random.normal(scale=translation_std, size=3).T
+        trans_factor = np.array([
+            np.random.uniform(-translation_std[0], translation_std[0]),
+            np.random.uniform(-translation_std[1], translation_std[1]), 0
+        ]).T
 
         input_dict['points'].translate(trans_factor)
         input_dict['pcd_trans'] = trans_factor

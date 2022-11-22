@@ -2,247 +2,24 @@
 import copy
 from typing import Dict, List, Optional, Tuple, Union
 
+import numpy as np
 import torch
-from mmcv.cnn import ConvModule, build_conv_layer
+from mmcv.cnn import ConvModule
 from mmengine.model import BaseModule
 from mmengine.structures import InstanceData
 from torch import Tensor, nn
+from torch.nn import Conv1d
 
-from mmdet3d.models.utils import (clip_sigmoid, draw_heatmap_gaussian,
-                                  gaussian_radius)
+from mmdet3d.models.utils import draw_heatmap_gaussian, gaussian_radius
 from mmdet3d.registry import MODELS, TASK_UTILS
-from mmdet3d.structures import Det3DDataSample, xywhr2xyxyr
+from mmdet3d.structures import (Det3DDataSample, bbox_overlaps_3d,
+                                center_to_corner_box2d, xywhr2xyxyr)
 from mmdet.models.utils import multi_apply
-from .. import builder
 from ..layers import circle_nms, nms_bev
 
 
 @MODELS.register_module()
-class SeparateHead(BaseModule):
-    """SeparateHead for CenterHead.
-
-    Args:
-        in_channels (int): Input channels for conv_layer.
-        heads (dict): Conv information.
-        head_conv (int, optional): Output channels.
-            Default: 64.
-        final_kernel (int, optional): Kernel size for the last conv layer.
-            Default: 1.
-        init_bias (float, optional): Initial bias. Default: -2.19.
-        conv_cfg (dict, optional): Config of conv layer.
-            Default: dict(type='Conv2d')
-        norm_cfg (dict, optional): Config of norm layer.
-            Default: dict(type='BN2d').
-        bias (str, optional): Type of bias. Default: 'auto'.
-    """
-
-    def __init__(self,
-                 in_channels,
-                 heads,
-                 head_conv=64,
-                 final_kernel=1,
-                 init_bias=-2.19,
-                 conv_cfg=dict(type='Conv2d'),
-                 norm_cfg=dict(type='BN2d'),
-                 bias='auto',
-                 init_cfg=None,
-                 **kwargs):
-        assert init_cfg is None, 'To prevent abnormal initialization ' \
-            'behavior, init_cfg is not allowed to be set'
-        super(SeparateHead, self).__init__(init_cfg=init_cfg)
-        self.heads = heads
-        self.init_bias = init_bias
-        for head in self.heads:
-            classes, num_conv = self.heads[head]
-            conv_layers = []
-            c_in = in_channels
-            for i in range(num_conv - 1):
-                conv_layers.append(
-                    ConvModule(
-                        c_in,
-                        head_conv,
-                        kernel_size=final_kernel,
-                        stride=1,
-                        padding=final_kernel // 2,
-                        bias=bias,
-                        conv_cfg=conv_cfg,
-                        norm_cfg=norm_cfg))
-                c_in = head_conv
-
-            conv_layers.append(
-                build_conv_layer(
-                    conv_cfg,
-                    head_conv,
-                    classes,
-                    kernel_size=final_kernel,
-                    stride=1,
-                    padding=final_kernel // 2,
-                    bias=True))
-            conv_layers = nn.Sequential(*conv_layers)
-
-            self.__setattr__(head, conv_layers)
-
-            if init_cfg is None:
-                self.init_cfg = dict(type='Kaiming', layer='Conv2d')
-
-    def init_weights(self):
-        """Initialize weights."""
-        super().init_weights()
-        for head in self.heads:
-            if 'heatmap' in head:
-                self.__getattr__(head)[-1].bias.data.fill_(self.init_bias)
-
-    def forward(self, x):
-        """Forward function for SepHead.
-
-        Args:
-            x (torch.Tensor): Input feature map with the shape of
-                [B, 512, 128, 128].
-
-        Returns:
-            dict[str: torch.Tensor]: contains the following keys:
-
-                -reg (torch.Tensor): 2D regression value with the
-                    shape of [B, 2, H, W].
-                -height (torch.Tensor): Height value with the
-                    shape of [B, 1, H, W].
-                -dim (torch.Tensor): Size value with the shape
-                    of [B, 3, H, W].
-                -rot (torch.Tensor): Rotation value with the
-                    shape of [B, 2, H, W].
-                -vel (torch.Tensor): Velocity value with the
-                    shape of [B, 2, H, W].
-                -heatmap (torch.Tensor): Heatmap with the shape of
-                    [B, N, H, W].
-        """
-        ret_dict = dict()
-        for head in self.heads:
-            ret_dict[head] = self.__getattr__(head)(x)
-
-        return ret_dict
-
-
-@MODELS.register_module()
-class DCNSeparateHead(BaseModule):
-    r"""DCNSeparateHead for CenterHead.
-
-    .. code-block:: none
-            /-----> DCN for heatmap task -----> heatmap task.
-    feature
-            \-----> DCN for regression tasks -----> regression tasks
-
-    Args:
-        in_channels (int): Input channels for conv_layer.
-        num_cls (int): Number of classes.
-        heads (dict): Conv information.
-        dcn_config (dict): Config of dcn layer.
-        head_conv (int, optional): Output channels.
-            Default: 64.
-        final_kernel (int, optional): Kernel size for the last conv
-            layer. Default: 1.
-        init_bias (float, optional): Initial bias. Default: -2.19.
-        conv_cfg (dict, optional): Config of conv layer.
-            Default: dict(type='Conv2d')
-        norm_cfg (dict, optional): Config of norm layer.
-            Default: dict(type='BN2d').
-        bias (str, optional): Type of bias. Default: 'auto'.
-    """  # noqa: W605
-
-    def __init__(self,
-                 in_channels,
-                 num_cls,
-                 heads,
-                 dcn_config,
-                 head_conv=64,
-                 final_kernel=1,
-                 init_bias=-2.19,
-                 conv_cfg=dict(type='Conv2d'),
-                 norm_cfg=dict(type='BN2d'),
-                 bias='auto',
-                 init_cfg=None,
-                 **kwargs):
-        assert init_cfg is None, 'To prevent abnormal initialization ' \
-            'behavior, init_cfg is not allowed to be set'
-        super(DCNSeparateHead, self).__init__(init_cfg=init_cfg)
-        if 'heatmap' in heads:
-            heads.pop('heatmap')
-        # feature adaptation with dcn
-        # use separate features for classification / regression
-        self.feature_adapt_cls = build_conv_layer(dcn_config)
-
-        self.feature_adapt_reg = build_conv_layer(dcn_config)
-
-        # heatmap prediction head
-        cls_head = [
-            ConvModule(
-                in_channels,
-                head_conv,
-                kernel_size=3,
-                padding=1,
-                conv_cfg=conv_cfg,
-                bias=bias,
-                norm_cfg=norm_cfg),
-            build_conv_layer(
-                conv_cfg,
-                head_conv,
-                num_cls,
-                kernel_size=3,
-                stride=1,
-                padding=1,
-                bias=bias)
-        ]
-        self.cls_head = nn.Sequential(*cls_head)
-        self.init_bias = init_bias
-        # other regression target
-        self.task_head = SeparateHead(
-            in_channels,
-            heads,
-            head_conv=head_conv,
-            final_kernel=final_kernel,
-            bias=bias)
-        if init_cfg is None:
-            self.init_cfg = dict(type='Kaiming', layer='Conv2d')
-
-    def init_weights(self):
-        """Initialize weights."""
-        super().init_weights()
-        self.cls_head[-1].bias.data.fill_(self.init_bias)
-
-    def forward(self, x):
-        """Forward function for DCNSepHead.
-
-        Args:
-            x (torch.Tensor): Input feature map with the shape of
-                [B, 512, 128, 128].
-
-        Returns:
-            dict[str: torch.Tensor]: contains the following keys:
-
-                -reg （torch.Tensor): 2D regression value with the
-                    shape of [B, 2, H, W].
-                -height (torch.Tensor): Height value with the
-                    shape of [B, 1, H, W].
-                -dim (torch.Tensor): Size value with the shape
-                    of [B, 3, H, W].
-                -rot (torch.Tensor): Rotation value with the
-                    shape of [B, 2, H, W].
-                -vel (torch.Tensor): Velocity value with the
-                    shape of [B, 2, H, W].
-                -heatmap (torch.Tensor): Heatmap with the shape of
-                    [B, N, H, W].
-        """
-        center_feat = self.feature_adapt_cls(x)
-        reg_feat = self.feature_adapt_reg(x)
-
-        cls_score = self.cls_head(center_feat)
-        ret = self.task_head(reg_feat)
-        ret['heatmap'] = cls_score
-
-        return ret
-
-
-@MODELS.register_module()
-class CenterHead(BaseModule):
+class CenterFormHead(BaseModule):
     """CenterHead for CenterPoint.
 
     Args:
@@ -276,20 +53,33 @@ class CenterHead(BaseModule):
     """
 
     def __init__(self,
-                 in_channels: Union[List[int], int] = [128],
+                 in_channels: Union[List[int], int] = 256,
                  tasks: Optional[List[dict]] = None,
+                 transformer_embed_dim=384,
+                 transformer_decoder: Optional[dict] = None,
                  bbox_coder: Optional[dict] = None,
                  common_heads: dict = dict(),
                  loss_cls: dict = dict(
-                     type='mmdet.GaussianFocalLoss', reduction='mean'),
+                     type='mmdet.GaussianFocalLoss',
+                     reduction='mean',
+                     loss_weight=1),
                  loss_bbox: dict = dict(
-                     type='mmdet.L1Loss', reduction='none', loss_weight=0.25),
+                     type='mmdet.L1Loss', reduction='none', loss_weight=2),
+                 loss_corner=dict(
+                     type='mmdet.MSELoss', reduction='mean', loss_weight=1),
+                 loss_iou=dict(
+                     type='mmdet.SmoothL1Loss',
+                     beta=1.0,
+                     reduction='mean',
+                     loss_weight=1),
                  separate_head: dict = dict(
                      type='mmdet.SeparateHead',
                      init_bias=-2.19,
                      final_kernel=3),
                  share_conv_channel: int = 64,
+                 num_center_proposals: int = 500,
                  num_heatmap_convs: int = 2,
+                 num_cornermap_convs: int = 2,
                  conv_cfg: dict = dict(type='Conv2d'),
                  norm_cfg: dict = dict(type='BN2d'),
                  bias: str = 'auto',
@@ -300,7 +90,7 @@ class CenterHead(BaseModule):
                  **kwargs):
         assert init_cfg is None, 'To prevent abnormal initialization ' \
             'behavior, init_cfg is not allowed to be set'
-        super(CenterHead, self).__init__(init_cfg=init_cfg, **kwargs)
+        super(CenterFormHead, self).__init__(init_cfg=init_cfg, **kwargs)
 
         # TODO we should rename this variable,
         # for example num_classes_per_task ?
@@ -313,9 +103,12 @@ class CenterHead(BaseModule):
         self.in_channels = in_channels
         self.num_classes = num_classes
         self.norm_bbox = norm_bbox
+        self.num_center_proposals = num_center_proposals
 
         self.loss_cls = MODELS.build(loss_cls)
         self.loss_bbox = MODELS.build(loss_bbox)
+        self.loss_iou = MODELS.build(loss_iou)
+        self.loss_corner = MODELS.build(loss_corner)
         self.bbox_coder = TASK_UTILS.build(bbox_coder)
         self.num_anchor_per_locs = [n for n in num_classes]
         self.fp16_enabled = False
@@ -330,16 +123,42 @@ class CenterHead(BaseModule):
             norm_cfg=norm_cfg,
             bias=bias)
 
+        # transformer decoder
+        self.input_proj = Conv1d(
+            self.in_channels, transformer_embed_dim, kernel_size=1)
+        self.transformer_decoder = MODELS.build(transformer_decoder)
+        self.pos_proj = nn.Linear(2, transformer_embed_dim)
+
         self.task_heads = nn.ModuleList()
+
+        # heatmap_head does not use the aggregated features from
+        # DeformableDetrTransformerDecoder
+        heatmap_head = copy.deepcopy(separate_head)
+        heatmap_head['conv_cfg'] = dict(type='Conv2d')
+        heatmap_head['norm_cfg'] = dict(type='BN2d')
+        heatmap_head.update(
+            in_channels=in_channels,
+            heads=dict(
+                center_heatmap=(sum(num_classes), num_heatmap_convs),
+                corner_heatmap=(1, num_cornermap_convs)),
+            head_conv=share_conv_channel)
+        self.heatmap_head = MODELS.build(heatmap_head)
+        # separate_head.update(
+        #     in_channels=in_channels,
+        #     heads=dict(),
+        #     head_conv=share_conv_channel,
+        #     num_cls=1)
+        # self.corner_heatmap_head = MODELS.build(separate_head)
 
         for num_cls in num_classes:
             heads = copy.deepcopy(common_heads)
-            heads.update(dict(heatmap=(num_cls, num_heatmap_convs)))
             separate_head.update(
-                in_channels=share_conv_channel, heads=heads, num_cls=num_cls)
-            self.task_heads.append(builder.build_head(separate_head))
+                in_channels=share_conv_channel,
+                heads=heads,
+                head_conv=share_conv_channel)
+            self.task_heads.append(MODELS.build(separate_head))
 
-    def forward_single(self, x: Tensor) -> dict:
+    def forward(self, x: Tensor) -> dict:
         """Forward function for CenterPoint.
 
         Args:
@@ -350,25 +169,11 @@ class CenterHead(BaseModule):
             list[dict]: Output results for tasks.
         """
         ret_dicts = []
-
         x = self.shared_conv(x)
-
         for task in self.task_heads:
             ret_dicts.append(task(x))
 
         return ret_dicts
-
-    def forward(self, feats: List[Tensor]) -> Tuple[List[Tensor]]:
-        """Forward pass.
-
-        Args:
-            feats (list[torch.Tensor]): Multi-level features, e.g.,
-                features produced by FPN.
-
-        Returns:
-            tuple(list[dict]): Output results for tasks.
-        """
-        return multi_apply(self.forward_single, feats)
 
     def _gather_feat(self, feat, ind, mask=None):
         """Gather feature map.
@@ -429,11 +234,14 @@ class CenterHead(BaseModule):
                 - list[torch.Tensor]: Masks indicating which
                     boxes are valid.
         """
-        heatmaps, anno_boxes, inds, masks = multi_apply(
+        heatmaps, anno_boxes, inds, masks, corner_heatmaps = multi_apply(
             self.get_targets_single, batch_gt_instances_3d)
         # Transpose heatmaps
         heatmaps = list(map(list, zip(*heatmaps)))
         heatmaps = [torch.stack(hms_) for hms_ in heatmaps]
+        # Transpose heatmaps
+        corner_heatmaps = list(map(list, zip(*corner_heatmaps)))
+        corner_heatmaps = [torch.stack(hms_) for hms_ in corner_heatmaps]
         # Transpose anno_boxes
         anno_boxes = list(map(list, zip(*anno_boxes)))
         anno_boxes = [torch.stack(anno_boxes_) for anno_boxes_ in anno_boxes]
@@ -443,7 +251,7 @@ class CenterHead(BaseModule):
         # Transpose inds
         masks = list(map(list, zip(*masks)))
         masks = [torch.stack(masks_) for masks_ in masks]
-        return heatmaps, anno_boxes, inds, masks
+        return heatmaps, anno_boxes, inds, masks, corner_heatmaps
 
     def get_targets_single(self,
                            gt_instances_3d: InstanceData) -> Tuple[Tensor]:
@@ -502,14 +310,14 @@ class CenterHead(BaseModule):
             task_classes.append(torch.cat(task_class).long().to(device))
             flag2 += len(mask)
         draw_gaussian = draw_heatmap_gaussian
-        heatmaps, anno_boxes, inds, masks = [], [], [], []
+        heatmaps, anno_boxes, inds, masks, corner_heatmaps = [], [], [], [], []
 
         for idx, task_head in enumerate(self.task_heads):
             heatmap = gt_bboxes_3d.new_zeros(
                 (len(self.class_names[idx]), feature_map_size[1],
                  feature_map_size[0]))
 
-            anno_box = gt_bboxes_3d.new_zeros((max_objs, 10),
+            anno_box = gt_bboxes_3d.new_zeros((max_objs, 8),
                                               dtype=torch.float32)
 
             ind = gt_labels_3d.new_zeros((max_objs), dtype=torch.int64)
@@ -558,6 +366,40 @@ class CenterHead(BaseModule):
 
                     draw_gaussian(heatmap[cls_id], center_int, radius)
 
+                    radius = radius // 2
+                    # # draw four corner and center TODO: use torch
+                    rot = task_boxes[idx][k][6]
+                    corner_keypoints = center_to_corner_box2d(
+                        center.unsqueeze(0).cpu().numpy(),
+                        torch.tensor([[width, length]],
+                                     dtype=torch.float32).numpy(),
+                        angles=rot,
+                        origin=0.5)
+                    corner_keypoints = torch.from_numpy(corner_keypoints).to(
+                        center)
+
+                    corner_heatmap = torch.zeros(
+                        (1, feature_map_size[1], feature_map_size[0]),
+                        dtype=torch.float32,
+                        device=device)
+                    draw_gaussian(corner_heatmap, center_int, radius)
+                    draw_gaussian(
+                        corner_heatmap,
+                        (corner_keypoints[0, 0] + corner_keypoints[0, 1]) / 2,
+                        radius)
+                    draw_gaussian(
+                        corner_heatmap,
+                        (corner_keypoints[0, 2] + corner_keypoints[0, 3]) / 2,
+                        radius)
+                    draw_gaussian(
+                        corner_heatmap,
+                        (corner_keypoints[0, 0] + corner_keypoints[0, 3]) / 2,
+                        radius)
+                    draw_gaussian(
+                        corner_heatmap,
+                        (corner_keypoints[0, 1] + corner_keypoints[0, 2]) / 2,
+                        radius)
+
                     new_idx = k
                     x, y = center_int[0], center_int[1]
 
@@ -567,25 +409,27 @@ class CenterHead(BaseModule):
                     ind[new_idx] = y * feature_map_size[0] + x
                     mask[new_idx] = 1
                     # TODO: support other outdoor dataset
-                    vx, vy = task_boxes[idx][k][7:]
+                    # vx, vy = task_boxes[idx][k][7:]
                     rot = task_boxes[idx][k][6]
                     box_dim = task_boxes[idx][k][3:6]
                     if self.norm_bbox:
                         box_dim = box_dim.log()
                     anno_box[new_idx] = torch.cat([
                         center - torch.tensor([x, y], device=device),
-                        z.unsqueeze(0), box_dim,
+                        z.unsqueeze(0),
+                        box_dim,
                         torch.sin(rot).unsqueeze(0),
                         torch.cos(rot).unsqueeze(0),
-                        vx.unsqueeze(0),
-                        vy.unsqueeze(0)
+                        # vx.unsqueeze(0),
+                        # vy.unsqueeze(0)
                     ])
 
             heatmaps.append(heatmap)
+            corner_heatmaps.append(corner_heatmap)
             anno_boxes.append(anno_box)
             masks.append(mask)
             inds.append(ind)
-        return heatmaps, anno_boxes, inds, masks
+        return heatmaps, anno_boxes, inds, masks, corner_heatmaps
 
     def loss(self, pts_feats: List[Tensor],
              batch_data_samples: List[Det3DDataSample], *args,
@@ -593,7 +437,8 @@ class CenterHead(BaseModule):
         """Forward function for point cloud branch.
 
         Args:
-            pts_feats (list[torch.Tensor]): Features of point cloud branch
+            pts_feats (list[torch.Tensor]): Features of point cloud branch. It
+                contains three level features: `norm`, `down`, `up`.
             batch_data_samples (List[:obj:`Det3DDataSample`]): The Data
                 Samples. It usually includes information such as
                 `gt_instance_3d`, .
@@ -601,15 +446,119 @@ class CenterHead(BaseModule):
         Returns:
             dict: Losses of each branch.
         """
-        outs = self(pts_feats)
+        outs = dict()
+        outs.update(self.heatmap_head(pts_feats[-1]))
+        outs['center_heatmap'] = torch.sigmoid(outs['center_heatmap'])
+        outs['corner_heatmap'] = torch.sigmoid(outs['corner_heatmap'])
+
         batch_gt_instance_3d = []
         for data_sample in batch_data_samples:
             batch_gt_instance_3d.append(data_sample.gt_instances_3d)
-        losses = self.loss_by_feat(outs, batch_gt_instance_3d)
+        # masks: list[torch.Tensor], len(masks)==num_task_heads,
+        # Tensor.shape=(batch, max_obj)
+        heatmaps, anno_boxes, gt_inds, gt_masks, corner_heatmaps = self.get_targets(  # noqa: E501
+            batch_gt_instance_3d)
+
+        batch, num_cls, H, W = outs['center_heatmap'].size()
+
+        scores, labels = torch.max(
+            outs['center_heatmap'].reshape(batch, num_cls, H * W),
+            dim=1)  # b,H*W
+
+        if self.heatmap_head.corner_heatmap.training:
+            # TODO: ``gt_inds`` should include different heads.
+            # hard code here since model on waymo only has one task head.
+            batch_id_gt = torch.meshgrid(
+                torch.arange(batch),
+                torch.arange(gt_inds[0].shape[1]))[0].to(labels)
+
+            scores[batch_id_gt,
+                   gt_inds[0]] = scores[batch_id_gt, gt_inds[0]] + gt_masks[0]
+            order = scores.sort(1, descending=True)[1]
+            # The reference position about the 500 predictions
+            order = order[:, :self.num_center_proposals]
+            scores[batch_id_gt,
+                   gt_inds[0]] = scores[batch_id_gt, gt_inds[0]] - gt_masks[0]
+        else:
+            order = scores.sort(1, descending=True)[1]
+            order = order[:, :self.num_center_proposals]
+
+        # scores = torch.gather(scores, 1, order)
+        # labels = torch.gather(labels, 1, order)
+        # mask = scores > self.score_threshold
+
+        # expand_order = order.unsqueeze(-1).expand(batch,
+        #                                           self.num_center_proposals,
+        #                                           anno_boxes[0].shape[-1])
+        # anno_boxes[0] = torch.gather(anno_boxes[0], 1, expand_order)
+
+        center_feat = (pts_feats[-1].reshape(batch, -1, H * W).transpose(
+            2, 1).contiguous()[batch_id_gt, order])  # B, 500, C
+
+        # create position embedding for each center
+        y_coor = order // W
+        x_coor = order - y_coor * W
+        y_coor, x_coor = y_coor.to(center_feat), x_coor.to(center_feat)
+        y_coor, x_coor = y_coor / H, x_coor / W
+        center_pos = torch.stack([x_coor, y_coor], dim=2)
+        center_pos_embed = self.pos_proj(center_pos)
+
+        # run transformer
+        mlvl_feats = torch.cat(
+            (
+                pts_feats[0].reshape(batch, -1, (H * W) // 4).transpose(
+                    2, 1).contiguous(),
+                pts_feats[1].reshape(batch, -1, (H * W) // 16).transpose(
+                    2, 1).contiguous(),
+                pts_feats[2].reshape(batch, -1, H * W).transpose(
+                    2, 1).contiguous(),
+            ),
+            dim=1,
+        )  # B ,sum(H*W), C
+        spatial_shapes = torch.as_tensor(
+            [(H, W), (H // 2, W // 2), (H // 4, W // 4)],
+            dtype=torch.long,
+            device=center_feat.device,
+        )
+        level_start_index = torch.cat((
+            spatial_shapes.new_zeros((1, )),
+            spatial_shapes.prod(1).cumsum(0)[:-1],
+        ))
+
+        levels = len(pts_feats)
+        # reference_points = center_pos[:, :, None, :]
+
+        # center_feat = self.input_proj(center_feat.transpose(2, 1)).transpose(
+        #     2, 1).contiguous()
+
+        center_proposal_feat, _ = self.transformer_decoder(
+            query=center_feat,
+            key=None,
+            value=mlvl_feats,
+            query_pos=center_pos_embed,
+            key_padding_mask=None,
+            reference_points=center_pos,
+            spatial_shapes=spatial_shapes,
+            level_start_index=level_start_index,
+            valid_ratios=torch.ones(batch, levels, 2).to(center_feat))
+
+        # hard code here. There is only one task head in Waymo.
+        outs.update(self(center_proposal_feat.transpose(2, 1).contiguous())[0])
+
+        # TODO: check labels
+        anno_boxes, selected_mask, _ = self.get_corresponding_box(
+            order, gt_inds[0], gt_masks[0],
+            labels[:, :self.num_center_proposals], anno_boxes[0])
+
+        losses = self.loss_by_feat([outs], batch_gt_instance_3d, heatmaps,
+                                   corner_heatmaps, [anno_boxes],
+                                   [selected_mask], order)
+
         return losses
 
     def loss_by_feat(self, preds_dicts: Tuple[List[dict]],
-                     batch_gt_instances_3d: List[InstanceData], *args,
+                     batch_gt_instances_3d: List[InstanceData], heatmaps,
+                     corner_heatmaps, anno_boxes, masks, order, *args,
                      **kwargs):
         """Loss function for CenterHead.
 
@@ -625,43 +574,158 @@ class CenterHead(BaseModule):
         Returns:
             dict[str,torch.Tensor]: Loss of heatmap and bbox of each task.
         """
-
-        heatmaps, anno_boxes, inds, masks = self.get_targets(
-            batch_gt_instances_3d)
         loss_dict = dict()
         for task_id, preds_dict in enumerate(preds_dicts):
-            # heatmap focal loss
-            preds_dict[0]['heatmap'] = clip_sigmoid(preds_dict[0]['heatmap'])
+            # Heatmap focal loss
+            # TODO: Fast focal loss in CenterForm
             num_pos = heatmaps[task_id].eq(1).float().sum().item()
             loss_heatmap = self.loss_cls(
-                preds_dict[0]['heatmap'],
+                preds_dict['center_heatmap'],
                 heatmaps[task_id],
                 avg_factor=max(num_pos, 1))
-            target_box = anno_boxes[task_id]
-            # reconstruct the anno_box from multiple reg heads
-            preds_dict[0]['anno_box'] = torch.cat(
-                (preds_dict[0]['reg'], preds_dict[0]['height'],
-                 preds_dict[0]['dim'], preds_dict[0]['rot'],
-                 preds_dict[0]['vel']),
-                dim=1)
 
             # Regression loss for dimension, offset, height, rotation
-            ind = inds[task_id]
-            num = masks[task_id].float().sum()
-            pred = preds_dict[0]['anno_box'].permute(0, 2, 3, 1).contiguous()
-            pred = pred.view(pred.size(0), -1, pred.size(3))
-            pred = self._gather_feat(pred, ind)
-            mask = masks[task_id].unsqueeze(2).expand_as(target_box).float()
-            isnotnan = (~torch.isnan(target_box)).float()
-            mask *= isnotnan
+            target_box = anno_boxes[task_id]
+            preds_dict['anno_box'] = torch.cat(
+                (preds_dict['reg'], preds_dict['height'], preds_dict['dim'],
+                 preds_dict['rot']),
+                dim=1)
 
+            gt_num = masks[task_id].float().sum()
+            pred = preds_dict['anno_box'].permute(0, 2, 1).contiguous()
+            mask = masks[task_id].unsqueeze(2).expand_as(target_box).float()
+
+            isnotnan = (~torch.isnan(target_box)).float()
+            mask_bbox_loss = mask * isnotnan
             code_weights = self.train_cfg.get('code_weights', None)
-            bbox_weights = mask * mask.new_tensor(code_weights)
+            bbox_weights = mask_bbox_loss * mask_bbox_loss.new_tensor(
+                code_weights)
             loss_bbox = self.loss_bbox(
-                pred, target_box, bbox_weights, avg_factor=(num + 1e-4))
-            loss_dict[f'task{task_id}.loss_heatmap'] = loss_heatmap
+                pred, target_box, bbox_weights, avg_factor=(gt_num + 1e-4))
+
+            # IoU loss
+            decoded_pred_bboxes = self.decode_pred_bboxes(
+                preds_dict['anno_box'], order,
+                preds_dict['center_heatmap'].shape[-2],
+                preds_dict['center_heatmap'].shape[-1])
+            decoded_pred_bboxes = decoded_pred_bboxes.reshape(-1, 7)
+            gt_bboxes = self.decode_gt_bboxes(
+                target_box, order, preds_dict['center_heatmap'].shape[-2],
+                preds_dict['center_heatmap'].shape[-1])
+            gt_bboxes = gt_bboxes.reshape(-1, 7)
+
+            # TODO: check it
+            iou_targets = bbox_overlaps_3d(
+                decoded_pred_bboxes,
+                gt_bboxes)[range(decoded_pred_bboxes.shape[0]),
+                           range(gt_bboxes.shape[0])]
+            isnotnan = (~torch.isnan(iou_targets)).float()
+            mask = masks[task_id].reshape(-1)
+            mask_iou_loss = mask * isnotnan
+            iou_targets = 2 * iou_targets - 1
+            loss_iou = self.loss_iou(
+                preds_dict['iou'].reshape(-1),
+                iou_targets,
+                mask_iou_loss,
+                avg_factor=(gt_num + 1e-4))
+
+            # Corner loss
+            mask_corner_loss = corner_heatmaps[task_id] > 0
+            num_corners = mask_corner_loss.float().sum().item()
+            loss_corner = self.loss_corner(
+                preds_dict['corner_heatmap'],
+                corner_heatmaps[task_id],
+                mask_corner_loss,
+                avg_factor=(num_corners + 1e-4))
+
+            loss_dict[f'task{task_id}.loss_center_heatmap'] = loss_heatmap
             loss_dict[f'task{task_id}.loss_bbox'] = loss_bbox
+            loss_dict[f'task{task_id}.loss_iou'] = loss_iou
+            loss_dict[f'task{task_id}.loss_corner_heatmap'] = loss_corner
+
         return loss_dict
+
+    def get_corresponding_box(self, x_ind, y_ind, y_mask, y_cls, target_box):
+        # find the id in y which has the same ind in x
+
+        # x_ind: sorted order about prediction score. [bs, 500]
+        # y_ind: the position index of gt in [bs, 500]. index is in range
+        # [0, H*W）
+        # y_mask: Whether it's a gt. It's a mask. [bs, 500]
+        # y_cls: the true label in the 500 objects. [bs, 500]
+        # target_box,: the encodered targets [4, 500, 10]. No sorted.
+        select_target = torch.zeros(x_ind.shape[0], x_ind.shape[1],
+                                    target_box.shape[2]).to(target_box)
+        select_mask = torch.zeros_like(x_ind).to(y_mask)
+        select_cls = torch.zeros_like(x_ind).to(y_cls)
+
+        for i in range(x_ind.shape[0]):
+            idx = torch.arange(y_ind[i].shape[-1]).to(x_ind)
+            idx = idx[y_mask[i]]
+            box_cls = y_cls[i][y_mask[i]]
+            valid_y_ind = y_ind[i][y_mask[i]]
+            match = (
+                x_ind[i].unsqueeze(1) == valid_y_ind.unsqueeze(0)).nonzero()
+            select_target[i, match[:, 0]] = target_box[i, idx[match[:, 1]]]  #
+            select_mask[i, match[:, 0]] = 1
+            select_cls[i, match[:, 0]] = box_cls[match[:, 1]]
+
+        return select_target, select_mask, select_cls
+
+    def decode_pred_bboxes(self, pred_boxs, order, H, W):
+        batch = pred_boxs.shape[0]
+        obj_num = order.shape[1]
+        ys, xs = torch.meshgrid([torch.arange(0, H), torch.arange(0, W)])
+        ys = ys.view(1, H, W).repeat(batch, 1, 1).to(pred_boxs)
+        xs = xs.view(1, H, W).repeat(batch, 1, 1).to(pred_boxs)
+
+        batch_id = np.indices((batch, obj_num))[0]
+        batch_id = torch.from_numpy(batch_id).to(order)
+        xs = xs.view(batch, H * W)[batch_id,
+                                   order].unsqueeze(1) + pred_boxs[:, 0:1]
+        ys = ys.view(batch, H * W)[batch_id,
+                                   order].unsqueeze(1) + pred_boxs[:, 1:2]
+
+        xs = xs * self.train_cfg['out_size_factor'] * self.train_cfg[
+            'voxel_size'][0] + self.train_cfg['point_cloud_range'][0]
+        ys = ys * self.train_cfg['out_size_factor'] * self.train_cfg[
+            'voxel_size'][1] + self.train_cfg['point_cloud_range'][1]
+
+        rot = torch.atan2(pred_boxs[:, 6:7], pred_boxs[:, 7:8])
+        pred = torch.cat(
+            [xs, ys, pred_boxs[:, 2:3],
+             torch.exp(pred_boxs[:, 3:6]), rot],
+            dim=1)
+
+        return torch.transpose(pred, 1, 2).contiguous()  # B M 7
+
+    def decode_gt_bboxes(self, gt_boxs, order, H, W):
+        batch = gt_boxs.shape[0]
+        obj_num = order.shape[1]
+        ys, xs = torch.meshgrid([torch.arange(0, H), torch.arange(0, W)])
+        ys = ys.view(1, H, W).repeat(batch, 1, 1).to(gt_boxs)
+        xs = xs.view(1, H, W).repeat(batch, 1, 1).to(gt_boxs)
+
+        batch_id = np.indices((batch, obj_num))[0]
+        batch_id = torch.from_numpy(batch_id).to(order)
+
+        batch_gt_dim = torch.exp(gt_boxs[..., 3:6])
+        batch_gt_hei = gt_boxs[..., 2:3]
+        batch_gt_rot = torch.atan2(gt_boxs[..., -2:-1], gt_boxs[..., -1:])
+        xs = xs.view(batch, H * W)[batch_id, order].unsqueeze(2) + gt_boxs[...,
+                                                                           0:1]
+        ys = ys.view(batch, H * W)[batch_id, order].unsqueeze(2) + gt_boxs[...,
+                                                                           1:2]
+
+        xs = xs * self.train_cfg['out_size_factor'] * self.train_cfg[
+            'voxel_size'][0] + self.train_cfg['point_cloud_range'][0]
+        ys = ys * self.train_cfg['out_size_factor'] * self.train_cfg[
+            'voxel_size'][1] + self.train_cfg['point_cloud_range'][1]
+
+        batch_box_targets = torch.cat(
+            [xs, ys, batch_gt_hei, batch_gt_dim, batch_gt_rot], dim=-1)
+
+        return batch_box_targets  # B M 7
 
     def predict(self,
                 pts_feats: Dict[str, torch.Tensor],

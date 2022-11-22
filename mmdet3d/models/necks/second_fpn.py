@@ -31,7 +31,8 @@ class SECONDFPN(BaseModule):
                  upsample_cfg=dict(type='deconv', bias=False),
                  conv_cfg=dict(type='Conv2d', bias=False),
                  use_conv_for_no_stride=False,
-                 init_cfg=None):
+                 init_cfg=None,
+                 return_inputs=False):
         # if for GroupNorm,
         # cfg is dict(type='GN', num_groups=num_groups, eps=1e-3, affine=True)
         super(SECONDFPN, self).__init__(init_cfg=init_cfg)
@@ -39,6 +40,7 @@ class SECONDFPN(BaseModule):
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.fp16_enabled = False
+        self.return_inputs = return_inputs
 
         deblocks = []
         for i, out_channel in enumerate(out_channels):
@@ -87,4 +89,4 @@ class SECONDFPN(BaseModule):
             out = torch.cat(ups, dim=1)
         else:
             out = ups[0]
-        return [out]
+        return [out] if not self.return_inputs else list(x) + [out]

@@ -1,5 +1,6 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 from .base import Base3DDetector
+from .centerform import CenterForm
 from .centerpoint import CenterPoint
 from .dfm import DfM
 from .dynamic_voxelnet import DynamicVoxelNet
@@ -26,5 +27,5 @@ __all__ = [
     'DynamicMVXFasterRCNN', 'MVXFasterRCNN', 'PartA2', 'VoteNet', 'H3DNet',
     'CenterPoint', 'SSD3DNet', 'ImVoteNet', 'SingleStageMono3DDetector',
     'FCOSMono3D', 'ImVoxelNet', 'GroupFree3DNet', 'PointRCNN', 'SMOKEMono3D',
-    'SASSD', 'MinkSingleStage3DDetector', 'MultiViewDfM', 'DfM'
+    'SASSD', 'MinkSingleStage3DDetector', 'MultiViewDfM', 'DfM', 'CenterForm'
 ]
