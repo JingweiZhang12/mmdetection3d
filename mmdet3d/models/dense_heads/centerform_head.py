@@ -4,7 +4,8 @@ from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
-from mmcv.cnn import ConvModule
+from mmcv.cnn import Conv2d, ConvModule
+from mmdet.models.utils import multi_apply
 from mmengine.model import BaseModule
 from mmengine.structures import InstanceData
 from torch import Tensor, nn
@@ -14,7 +15,6 @@ from mmdet3d.models.utils import draw_heatmap_gaussian, gaussian_radius
 from mmdet3d.registry import MODELS, TASK_UTILS
 from mmdet3d.structures import (Det3DDataSample, bbox_overlaps_3d,
                                 center_to_corner_box2d, xywhr2xyxyr)
-from mmdet.models.utils import multi_apply
 from ..layers import circle_nms, nms_bev
 
 
@@ -115,17 +115,22 @@ class CenterFormHead(BaseModule):
 
         # a shared convolution
         self.shared_conv = ConvModule(
-            in_channels,
+            transformer_embed_dim,
             share_conv_channel,
-            kernel_size=3,
-            padding=1,
+            kernel_size=1,
+            padding=0,
             conv_cfg=conv_cfg,
             norm_cfg=norm_cfg,
             bias=bias)
 
         # transformer decoder
-        self.input_proj = Conv1d(
+        self.fpn_feats_proj = nn.ModuleList([
+            Conv2d(self.in_channels, transformer_embed_dim, kernel_size=1)
+            for _ in range(3)
+        ])
+        self.center_feat_proj = Conv1d(
             self.in_channels, transformer_embed_dim, kernel_size=1)
+
         self.transformer_decoder = MODELS.build(transformer_decoder)
         self.pos_proj = nn.Linear(2, transformer_embed_dim)
 
@@ -136,6 +141,7 @@ class CenterFormHead(BaseModule):
         heatmap_head = copy.deepcopy(separate_head)
         heatmap_head['conv_cfg'] = dict(type='Conv2d')
         heatmap_head['norm_cfg'] = dict(type='BN2d')
+        heatmap_head['final_kernel'] = 3
         heatmap_head.update(
             in_channels=in_channels,
             heads=dict(
@@ -316,6 +322,10 @@ class CenterFormHead(BaseModule):
             heatmap = gt_bboxes_3d.new_zeros(
                 (len(self.class_names[idx]), feature_map_size[1],
                  feature_map_size[0]))
+            corner_heatmap = torch.zeros(
+                (1, feature_map_size[1], feature_map_size[0]),
+                dtype=torch.float32,
+                device=device)
 
             anno_box = gt_bboxes_3d.new_zeros((max_objs, 8),
                                               dtype=torch.float32)
@@ -378,25 +388,21 @@ class CenterFormHead(BaseModule):
                     corner_keypoints = torch.from_numpy(corner_keypoints).to(
                         center)
 
-                    corner_heatmap = torch.zeros(
-                        (1, feature_map_size[1], feature_map_size[0]),
-                        dtype=torch.float32,
-                        device=device)
-                    draw_gaussian(corner_heatmap, center_int, radius)
+                    draw_gaussian(corner_heatmap[0], center_int, radius)
                     draw_gaussian(
-                        corner_heatmap,
+                        corner_heatmap[0],
                         (corner_keypoints[0, 0] + corner_keypoints[0, 1]) / 2,
                         radius)
                     draw_gaussian(
-                        corner_heatmap,
+                        corner_heatmap[0],
                         (corner_keypoints[0, 2] + corner_keypoints[0, 3]) / 2,
                         radius)
                     draw_gaussian(
-                        corner_heatmap,
+                        corner_heatmap[0],
                         (corner_keypoints[0, 0] + corner_keypoints[0, 3]) / 2,
                         radius)
                     draw_gaussian(
-                        corner_heatmap,
+                        corner_heatmap[0],
                         (corner_keypoints[0, 1] + corner_keypoints[0, 2]) / 2,
                         radius)
 
@@ -416,12 +422,9 @@ class CenterFormHead(BaseModule):
                         box_dim = box_dim.log()
                     anno_box[new_idx] = torch.cat([
                         center - torch.tensor([x, y], device=device),
-                        z.unsqueeze(0),
-                        box_dim,
+                        z.unsqueeze(0), box_dim,
                         torch.sin(rot).unsqueeze(0),
-                        torch.cos(rot).unsqueeze(0),
-                        # vx.unsqueeze(0),
-                        # vy.unsqueeze(0)
+                        torch.cos(rot).unsqueeze(0)
                     ])
 
             heatmaps.append(heatmap)
@@ -503,14 +506,18 @@ class CenterFormHead(BaseModule):
         center_pos = torch.stack([x_coor, y_coor], dim=2)
         center_pos_embed = self.pos_proj(center_pos)
 
+        mlvl_feats = []
+        for i, feat in enumerate(pts_feats):
+            mlvl_feats.append(self.fpn_feats_proj[i](feat))
+
         # run transformer
         mlvl_feats = torch.cat(
             (
-                pts_feats[0].reshape(batch, -1, (H * W) // 4).transpose(
+                mlvl_feats[0].reshape(batch, -1, (H * W) // 4).transpose(
                     2, 1).contiguous(),
-                pts_feats[1].reshape(batch, -1, (H * W) // 16).transpose(
+                mlvl_feats[1].reshape(batch, -1, (H * W) // 16).transpose(
                     2, 1).contiguous(),
-                pts_feats[2].reshape(batch, -1, H * W).transpose(
+                mlvl_feats[2].reshape(batch, -1, H * W).transpose(
                     2, 1).contiguous(),
             ),
             dim=1,
@@ -528,8 +535,8 @@ class CenterFormHead(BaseModule):
         levels = len(pts_feats)
         # reference_points = center_pos[:, :, None, :]
 
-        # center_feat = self.input_proj(center_feat.transpose(2, 1)).transpose(
-        #     2, 1).contiguous()
+        center_feat = self.center_feat_proj(center_feat.transpose(
+            2, 1)).transpose(2, 1).contiguous()
 
         center_proposal_feat, _ = self.transformer_decoder(
             query=center_feat,
@@ -552,14 +559,15 @@ class CenterFormHead(BaseModule):
 
         losses = self.loss_by_feat([outs], batch_gt_instance_3d, heatmaps,
                                    corner_heatmaps, [anno_boxes],
-                                   [selected_mask], order)
+                                   [selected_mask], order, gt_inds,
+                                   labels[:, :self.num_center_proposals])
 
         return losses
 
     def loss_by_feat(self, preds_dicts: Tuple[List[dict]],
                      batch_gt_instances_3d: List[InstanceData], heatmaps,
-                     corner_heatmaps, anno_boxes, masks, order, *args,
-                     **kwargs):
+                     corner_heatmaps, anno_boxes, masks, order,
+                     heatmap_gt_inds, heatmap_pos_labels, *args, **kwargs):
         """Loss function for CenterHead.
 
         Args:
@@ -638,10 +646,10 @@ class CenterFormHead(BaseModule):
                 mask_corner_loss,
                 avg_factor=(num_corners + 1e-4))
 
-            loss_dict[f'task{task_id}.loss_center_heatmap'] = loss_heatmap
+            loss_dict[f'task{task_id}.loss_center'] = loss_heatmap
             loss_dict[f'task{task_id}.loss_bbox'] = loss_bbox
             loss_dict[f'task{task_id}.loss_iou'] = loss_iou
-            loss_dict[f'task{task_id}.loss_corner_heatmap'] = loss_corner
+            loss_dict[f'task{task_id}.loss_corner'] = loss_corner
 
         return loss_dict
 

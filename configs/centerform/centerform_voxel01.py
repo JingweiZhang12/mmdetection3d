@@ -40,24 +40,24 @@ model = dict(
         in_channels=256,
         layer_nums=[5, 5],
         layer_strides=[1, 2],
-        out_channels=[10, 10],
+        out_channels=[256, 256],
         norm_cfg=dict(type='naiveSyncBN2d', eps=1e-3, momentum=0.01)),
     # neck return up, down, norm 3 stirdes,
     neck=dict(
         type='SECONDFPN',
-        in_channels=[10, 10],
+        in_channels=[256, 256],
         upsample_strides=[2, 4],
-        out_channels=[5, 5],
+        out_channels=[128, 128],
         upsample_cfg=dict(type='deconv', bias=False),
         norm_cfg=dict(type='naiveSyncBN2d', eps=1e-3, momentum=0.01),
         return_inputs=True),
     bbox_head=dict(
         type='CenterFormHead',
-        in_channels=10,
+        in_channels=256,
         tasks=[
             dict(num_class=3, class_names=['car', 'pedestrian', 'cyclist'])
         ],
-        transformer_embed_dim=10,
+        transformer_embed_dim=384,
         num_center_proposals=500,
         transformer_decoder=dict(
             _scope_='mmdet',
@@ -70,23 +70,23 @@ model = dict(
                 attn_cfgs=[
                     dict(
                         type='MultiheadAttention',
-                        embed_dims=10,
-                        num_heads=5,
+                        embed_dims=384,
+                        num_heads=6,
                         dropout=0.3),
                     dict(
                         type='MultiScaleDeformableAttention',
-                        embed_dims=10,
-                        num_heads=5,
+                        embed_dims=384,
+                        num_heads=6,
                         num_levels=3,
                         num_points=15)
                 ],
-                feedforward_channels=10,
+                feedforward_channels=256,
                 ffn_cfgs=dict(
                     type='FFN',
-                    embed_dims=10,
-                    feedforward_channels=10,
-                    ffn_num_fcs=2,
-                    ffn_dropout=0.3,
+                    embed_dims=384,
+                    feedforward_channels=256,
+                    num_fcs=2,
+                    ffn_drop=0.3,
                     act_cfg=dict(type='GELU')),
                 operation_order=('norm', 'self_attn', 'norm', 'cross_attn',
                                  'norm', 'ffn'))),
@@ -107,14 +107,19 @@ model = dict(
         separate_head=dict(
             type='SeparateHead',
             init_bias=-2.19,
-            final_kernel=3,
+            final_kernel=1,
             conv_cfg=dict(type='Conv1d'),
             norm_cfg=dict(type='BN1d')),
-        loss_cls=dict(type='mmdet.GaussianFocalLoss', reduction='mean'),
-        loss_bbox=dict(
-            type='mmdet.L1Loss', reduction='mean', loss_weight=0.25),
-        loss_corner=dict(type='mmdet.MSELoss', reduction='mean'),
-        loss_iou=dict(type='mmdet.SmoothL1Loss', beta=1.0, reduction='mean'),
+        loss_cls=dict(
+            type='mmdet.GaussianFocalLoss', reduction='mean', loss_weight=1),
+        loss_bbox=dict(type='mmdet.L1Loss', reduction='mean', loss_weight=2),
+        loss_corner=dict(
+            type='mmdet.MSELoss', reduction='mean', loss_weight=1),
+        loss_iou=dict(
+            type='mmdet.SmoothL1Loss',
+            beta=1.0,
+            reduction='mean',
+            loss_weight=1),
         norm_bbox=True),
     train_cfg=dict(
         grid_size=[1504, 1504, 40],
@@ -127,7 +132,7 @@ model = dict(
         min_radius=2,
         code_weights=[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]),
     test_cfg=dict(
-        post_center_limit_range=[-61.2, -61.2, -10.0, 61.2, 61.2, 10.0],
+        post_center_limit_range=[-80, -80, -10.0, 80, 80, 10.0],
         max_per_img=500,
         max_pool_nms=False,
         min_radius=[4, 12, 10, 1, 0.85, 0.175],
@@ -170,7 +175,7 @@ train_pipeline = [
         type='GlobalRotScaleTrans',
         rot_range=[-0.78539816, 0.78539816],
         scale_ratio_range=[0.95, 1.05],
-        translation_std=[0.5, 0.5, 20]),
+        translation_std=[0.5, 0.5, 0]),
     dict(type='PointsRangeFilter', point_cloud_range=point_cloud_range),
     dict(type='ObjectRangeFilter', point_cloud_range=point_cloud_range),
     dict(type='ObjectNameFilter', classes=class_names),
@@ -206,8 +211,8 @@ test_pipeline = [
 ]
 
 train_dataloader = dict(
-    batch_size=1,
-    num_workers=2,
+    batch_size=4,
+    num_workers=4,
     persistent_workers=True,
     sampler=dict(type='DefaultSampler', shuffle=True),
     dataset=dict(
@@ -223,7 +228,7 @@ train_dataloader = dict(
         # and box_type_3d='Depth' in sunrgbd and scannet dataset.
         box_type_3d='LiDAR',
         # load one frame every five frames
-        load_interval=1,
+        load_interval=5,
         file_client_args=file_client_args))
 
 # val_evaluator = dict(
@@ -304,4 +309,4 @@ train_cfg = dict(by_epoch=True, max_epochs=20, val_interval=21)
 #   - `base_batch_size` = (4 GPUs) x (4 samples per GPU).
 auto_scale_lr = dict(enable=False, base_batch_size=16)
 
-default_hooks = dict(logger=dict(type='LoggerHook', interval=1))
+default_hooks = dict(logger=dict(type='LoggerHook', interval=5))
