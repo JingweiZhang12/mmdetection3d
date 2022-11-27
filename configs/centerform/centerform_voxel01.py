@@ -103,7 +103,7 @@ model = dict(
             post_center_range=[-80, -80, -10.0, 80, 80, 10.0],
             max_num=500,
             score_threshold=0.1,
-            code_size=9),
+            code_size=7),
         separate_head=dict(
             type='SeparateHead',
             init_bias=-2.19,
@@ -144,7 +144,7 @@ model = dict(
         post_max_size=83,
         nms_thr=0.2))
 
-data_root = 'data/waymo/kitti_format/'
+data_root = 'data/waymo_mini/kitti_format/'
 db_sampler = dict(
     data_root=data_root,
     info_path=data_root + 'waymo_dbinfos_train.pkl',
@@ -210,13 +210,14 @@ test_pipeline = [
     dict(type='Pack3DDetInputs', keys=['points'])
 ]
 
+dataset_type = 'WaymoDataset'
 train_dataloader = dict(
     batch_size=4,
     num_workers=4,
     persistent_workers=True,
     sampler=dict(type='DefaultSampler', shuffle=True),
     dataset=dict(
-        type='WaymoDataset',
+        type=dataset_type,
         data_root=data_root,
         ann_file='waymo_infos_train.pkl',
         data_prefix=dict(pts='training/velodyne', sweeps='training/velodyne'),
@@ -230,14 +231,32 @@ train_dataloader = dict(
         # load one frame every five frames
         load_interval=5,
         file_client_args=file_client_args))
+val_dataloader = dict(
+    batch_size=1,
+    num_workers=1,
+    persistent_workers=True,
+    drop_last=False,
+    sampler=dict(type='DefaultSampler', shuffle=False),
+    dataset=dict(
+        type=dataset_type,
+        data_root=data_root,
+        data_prefix=dict(pts='training/velodyne', sweeps='training/velodyne'),
+        ann_file='waymo_infos_val.pkl',
+        pipeline=test_pipeline,
+        modality=input_modality,
+        test_mode=True,
+        metainfo=metainfo,
+        box_type_3d='LiDAR',
+        file_client_args=file_client_args))
+test_dataloader = val_dataloader
 
-# val_evaluator = dict(
-#     type='WaymoMetric',
-#     ann_file='./data/waymo/kitti_format/waymo_infos_val.pkl',
-#     waymo_bin_file='./data/waymo/waymo_format/gt.bin',
-#     data_root='./data/waymo/waymo_format',
-#     file_client_args=file_client_args)
-# test_evaluator = val_evaluator
+val_evaluator = dict(
+    type='WaymoMetric',
+    ann_file='./data/waymo/kitti_format/waymo_infos_val.pkl',
+    waymo_bin_file='./data/waymo/waymo_format/gt.bin',
+    data_root='./data/waymo/waymo_format',
+    file_client_args=file_client_args)
+test_evaluator = val_evaluator
 
 vis_backends = [dict(type='LocalVisBackend')]
 visualizer = dict(
@@ -300,8 +319,8 @@ param_scheduler = [
 
 # runtime settings
 train_cfg = dict(by_epoch=True, max_epochs=20, val_interval=21)
-# val_cfg = dict()
-# test_cfg = dict()
+val_cfg = dict()
+test_cfg = dict()
 
 # Default setting for scaling LR automatically
 #   - `enable` means enable scaling LR automatically

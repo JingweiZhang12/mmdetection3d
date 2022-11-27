@@ -753,15 +753,93 @@ class CenterFormHead(BaseModule):
             InstanceData contains 3d Bounding boxes and corresponding
             scores and labels.
         """
-        preds_dict = self(pts_feats)
+        outs = dict()
+        outs.update(self.heatmap_head(pts_feats[-1]))
+        outs['center_heatmap'] = torch.sigmoid(outs['center_heatmap'])
+        outs['corner_heatmap'] = torch.sigmoid(outs['corner_heatmap'])
+
+        batch, num_cls, H, W = outs['center_heatmap'].size()
+        scores, labels = torch.max(
+            outs['center_heatmap'].reshape(batch, num_cls, H * W),
+            dim=1)  # b,H*W
+
+        order = scores.sort(1, descending=True)[1]
+        order = order[:, :self.num_center_proposals]
+        outs['order'] = order
+        outs['scores'] = torch.gather(scores, 1, order)
+        outs['clses'] = torch.gather(labels, 1, order)
+
+        batch_id_gt = torch.meshgrid(
+            torch.arange(batch),
+            torch.arange(self.num_center_proposals))[0].to(labels)
+
+        center_feat = (pts_feats[-1].reshape(batch, -1, H * W).transpose(
+            2, 1).contiguous()[batch_id_gt, order])  # B, 500, C
+
+        # create position embedding for each center
+        y_coor = order // W
+        x_coor = order - y_coor * W
+        y_coor, x_coor = y_coor.to(center_feat), x_coor.to(center_feat)
+        y_coor, x_coor = y_coor / H, x_coor / W
+        center_pos = torch.stack([x_coor, y_coor], dim=2)
+        center_pos_embed = self.pos_proj(center_pos)
+
+        mlvl_feats = []
+        for i, feat in enumerate(pts_feats):
+            mlvl_feats.append(self.fpn_feats_proj[i](feat))
+
+        # run transformer
+        mlvl_feats = torch.cat(
+            (
+                mlvl_feats[0].reshape(batch, -1, (H * W) // 4).transpose(
+                    2, 1).contiguous(),
+                mlvl_feats[1].reshape(batch, -1, (H * W) // 16).transpose(
+                    2, 1).contiguous(),
+                mlvl_feats[2].reshape(batch, -1, H * W).transpose(
+                    2, 1).contiguous(),
+            ),
+            dim=1,
+        )  # B ,sum(H*W), C
+        spatial_shapes = torch.as_tensor(
+            [(H, W), (H // 2, W // 2), (H // 4, W // 4)],
+            dtype=torch.long,
+            device=center_feat.device,
+        )
+        level_start_index = torch.cat((
+            spatial_shapes.new_zeros((1, )),
+            spatial_shapes.prod(1).cumsum(0)[:-1],
+        ))
+
+        levels = len(pts_feats)
+        # reference_points = center_pos[:, :, None, :]
+
+        center_feat = self.center_feat_proj(center_feat.transpose(
+            2, 1)).transpose(2, 1).contiguous()
+
+        center_proposal_feat, _ = self.transformer_decoder(
+            query=center_feat,
+            key=None,
+            value=mlvl_feats,
+            query_pos=center_pos_embed,
+            key_padding_mask=None,
+            reference_points=center_pos,
+            spatial_shapes=spatial_shapes,
+            level_start_index=level_start_index,
+            valid_ratios=torch.ones(batch, levels, 2).to(center_feat))
+
+        # hard code here. There is only one task head in Waymo.
+        outs.update(self(center_proposal_feat.transpose(2, 1).contiguous())[0])
+
         batch_size = len(batch_data_samples)
         batch_input_metas = []
         for batch_index in range(batch_size):
             metainfo = batch_data_samples[batch_index].metainfo
             batch_input_metas.append(metainfo)
 
-        results_list = self.predict_by_feat(
-            preds_dict, batch_input_metas, rescale=rescale, **kwargs)
+        results_list = self.predict_by_feat([outs],
+                                            batch_input_metas,
+                                            rescale=rescale,
+                                            **kwargs)
         return results_list
 
     def predict_by_feat(self, preds_dicts: Tuple[List[dict]],
@@ -795,43 +873,78 @@ class CenterFormHead(BaseModule):
         rets = []
         for task_id, preds_dict in enumerate(preds_dicts):
             num_class_with_bg = self.num_classes[task_id]
-            batch_size = preds_dict[0]['heatmap'].shape[0]
-            batch_heatmap = preds_dict[0]['heatmap'].sigmoid()
+            batch_heatmap = preds_dict['center_heatmap']
+            bs, _, H, W = batch_heatmap.size()
 
-            batch_reg = preds_dict[0]['reg']
-            batch_hei = preds_dict[0]['height']
+            batch_reg = preds_dict['reg'].transpose(2, 1).contiguous()
+            batch_hei = preds_dict['height'].transpose(2, 1).contiguous()
 
             if self.norm_bbox:
-                batch_dim = torch.exp(preds_dict[0]['dim'])
+                batch_dim = torch.exp(preds_dict['dim']).transpose(
+                    2, 1).contiguous()
             else:
-                batch_dim = preds_dict[0]['dim']
+                batch_dim = preds_dict['dim'].transpose(2, 1).contiguous()
 
-            batch_rots = preds_dict[0]['rot'][:, 0].unsqueeze(1)
-            batch_rotc = preds_dict[0]['rot'][:, 1].unsqueeze(1)
+            batch_rots = preds_dict['rot'][:, 0].unsqueeze(1)
+            batch_rotc = preds_dict['rot'][:, 1].unsqueeze(1)
+            batch_rot = torch.atan2(batch_rots,
+                                    batch_rotc).transpose(2, 1).contiguous()
 
-            if 'vel' in preds_dict[0]:
-                batch_vel = preds_dict[0]['vel']
-            else:
-                batch_vel = None
-            temp = self.bbox_coder.decode(
-                batch_heatmap,
-                batch_rots,
-                batch_rotc,
-                batch_hei,
-                batch_dim,
-                batch_vel,
-                reg=batch_reg,
-                task_id=task_id)
+            ys, xs = torch.meshgrid([torch.arange(0, H), torch.arange(0, W)])
+            ys = ys.view(1, H, W).repeat(bs, 1, 1).to(batch_heatmap)
+            xs = xs.view(1, H, W).repeat(bs, 1, 1).to(batch_heatmap)
+            obj_num = preds_dict['order'].shape[1]
+            batch_id = np.indices((bs, obj_num))[0]
+            batch_id = torch.from_numpy(batch_id).to(preds_dict['order'])
+
+            xs = xs.view(bs, -1, 1)[batch_id,
+                                    preds_dict['order']] + batch_reg[:, :, 0:1]
+            ys = ys.view(bs, -1, 1)[batch_id,
+                                    preds_dict['order']] + batch_reg[:, :, 1:2]
+
+            xs = xs * self.test_cfg['out_size_factor'] * self.test_cfg[
+                'voxel_size'][0] + self.bbox_coder.pc_range[0]
+            ys = ys * self.test_cfg['out_size_factor'] * self.test_cfg[
+                'voxel_size'][1] + self.bbox_coder.pc_range[1]
+
+            final_box_preds = torch.cat(
+                [xs, ys, batch_hei, batch_dim, batch_rot], dim=2)
+            final_scores = preds_dict['scores']
+            final_preds = preds_dict['clses']
+
+            # use score threshold
+            if self.test_cfg['score_threshold'] is not None:
+                thresh_mask = final_scores > self.test_cfg['score_threshold']
+
+            # pose center restriction
+            post_center_range = torch.tensor(
+                self.bbox_coder.post_center_range, device=batch_heatmap.device)
+            mask = (final_box_preds[..., :3] >= post_center_range[:3]).all(2)
+            mask &= (final_box_preds[..., :3] <= post_center_range[3:]).all(2)
+            predictions_dicts = []
+            for i in range(bs):
+                cmask = mask[i, :]
+                if self.test_cfg['score_threshold']:
+                    cmask &= thresh_mask[i]
+
+                boxes3d = final_box_preds[i, cmask]
+                scores = final_scores[i, cmask]
+                labels = final_preds[i, cmask]
+                predictions_dict = {
+                    'bboxes': boxes3d,
+                    'scores': scores,
+                    'labels': labels
+                }
+                predictions_dicts.append(predictions_dict)
+
+            # NMS
             assert self.test_cfg['nms_type'] in ['circle', 'rotate']
-            batch_reg_preds = [box['bboxes'] for box in temp]
-            batch_cls_preds = [box['scores'] for box in temp]
-            batch_cls_labels = [box['labels'] for box in temp]
             if self.test_cfg['nms_type'] == 'circle':
                 ret_task = []
-                for i in range(batch_size):
-                    boxes3d = temp[i]['bboxes']
-                    scores = temp[i]['scores']
-                    labels = temp[i]['labels']
+                for i in range(bs):
+                    boxes3d = predictions_dicts[i]['bboxes']
+                    scores = predictions_dicts[i]['scores']
+                    labels = predictions_dicts[i]['labels']
                     centers = boxes3d[:, [0, 1]]
                     boxes = torch.cat([centers, scores.view(-1, 1)], dim=1)
                     keep = torch.tensor(
@@ -849,6 +962,9 @@ class CenterFormHead(BaseModule):
                     ret_task.append(ret)
                 rets.append(ret_task)
             else:
+                batch_reg_preds = [box['bboxes'] for box in predictions_dicts]
+                batch_cls_preds = [box['scores'] for box in predictions_dicts]
+                batch_cls_labels = [box['labels'] for box in predictions_dicts]
                 rets.append(
                     self.get_task_detections(num_class_with_bg,
                                              batch_cls_preds, batch_reg_preds,
@@ -942,7 +1058,6 @@ class CenterFormHead(BaseModule):
                 if self.test_cfg['score_threshold'] > 0.0:
                     box_preds = box_preds[top_scores_keep]
                     top_labels = top_labels[top_scores_keep]
-
                 boxes_for_nms = xywhr2xyxyr(img_metas[i]['box_type_3d'](
                     box_preds[:, :], self.bbox_coder.code_size).bev)
                 # the nms in 3d detection just remove overlap boxes.
