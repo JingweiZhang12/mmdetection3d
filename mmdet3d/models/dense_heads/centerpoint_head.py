@@ -851,7 +851,7 @@ class CenterHead(BaseModule):
             if num_class_with_bg == 1:
                 top_scores = cls_preds.squeeze(-1)
                 top_labels = torch.zeros(
-                    cls_preds.shape[0],
+                    cls_labels.shape[0],
                     device=cls_preds.device,
                     dtype=torch.long)
 

@@ -133,16 +133,18 @@ model = dict(
         code_weights=[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]),
     test_cfg=dict(
         post_center_limit_range=[-80, -80, -10.0, 80, 80, 10.0],
-        max_per_img=500,
-        max_pool_nms=False,
-        min_radius=[4, 12, 10, 1, 0.85, 0.175],
+        point_cloud_range=point_cloud_range,
+        max_per_img=1000,
         score_threshold=0.1,
         out_size_factor=4,
         voxel_size=voxel_size[:2],
+        iou_factor=[1, 1, 4],
         nms_type='rotate',
-        pre_max_size=1000,
-        post_max_size=83,
-        nms_thr=0.2))
+        use_multi_class_nms=True,
+        nms_pre_max_size=[1600, 1600, 800],
+        nms_post_max_size=[200, 200, 100],
+        nms_iou_thres=[0.8, 0.55, 0.55],
+    ))
 
 data_root = 'data/waymo_mini/kitti_format/'
 db_sampler = dict(
@@ -255,7 +257,9 @@ val_evaluator = dict(
     ann_file='./data/waymo/kitti_format/waymo_infos_val.pkl',
     waymo_bin_file='./data/waymo/waymo_format/gt.bin',
     data_root='./data/waymo/waymo_format',
-    file_client_args=file_client_args)
+    file_client_args=file_client_args,
+    convert_kitti_format=False,
+    idx2metainfo='./data/waymo/waymo_format/idx2metainfo.pkl')
 test_evaluator = val_evaluator
 
 vis_backends = [dict(type='LocalVisBackend')]

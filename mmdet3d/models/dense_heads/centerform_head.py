@@ -767,7 +767,7 @@ class CenterFormHead(BaseModule):
         order = order[:, :self.num_center_proposals]
         outs['order'] = order
         outs['scores'] = torch.gather(scores, 1, order)
-        outs['clses'] = torch.gather(labels, 1, order)
+        outs['classes'] = torch.gather(labels, 1, order)
 
         batch_id_gt = torch.meshgrid(
             torch.arange(batch),
@@ -889,6 +889,7 @@ class CenterFormHead(BaseModule):
             batch_rotc = preds_dict['rot'][:, 1].unsqueeze(1)
             batch_rot = torch.atan2(batch_rots,
                                     batch_rotc).transpose(2, 1).contiguous()
+            batch_ious = preds_dict['iou'].transpose(2, 1).contiguous()
 
             ys, xs = torch.meshgrid([torch.arange(0, H), torch.arange(0, W)])
             ys = ys.view(1, H, W).repeat(bs, 1, 1).to(batch_heatmap)
@@ -910,7 +911,10 @@ class CenterFormHead(BaseModule):
             final_box_preds = torch.cat(
                 [xs, ys, batch_hei, batch_dim, batch_rot], dim=2)
             final_scores = preds_dict['scores']
-            final_preds = preds_dict['clses']
+            final_preds = preds_dict['classes']
+
+            iou_factor = torch.LongTensor(
+                self.test_cfg['iou_factor']).to(batch_heatmap)
 
             # use score threshold
             if self.test_cfg['score_threshold'] is not None:
@@ -926,9 +930,12 @@ class CenterFormHead(BaseModule):
                 cmask = mask[i, :]
                 if self.test_cfg['score_threshold']:
                     cmask &= thresh_mask[i]
+                labels = final_preds[i, cmask]
+                ious = batch_ious[i, cmask, 0]
+                ious = torch.pow(ious, iou_factor[labels])
 
                 boxes3d = final_box_preds[i, cmask]
-                scores = final_scores[i, cmask]
+                scores = final_scores[i, cmask]  # * ious
                 labels = final_preds[i, cmask]
                 predictions_dict = {
                     'bboxes': boxes3d,
@@ -938,8 +945,9 @@ class CenterFormHead(BaseModule):
                 predictions_dicts.append(predictions_dict)
 
             # NMS
-            assert self.test_cfg['nms_type'] in ['circle', 'rotate']
-            if self.test_cfg['nms_type'] == 'circle':
+            nms_type = self.test_cfg['nms_type']
+            assert nms_type in ['circle', 'rotate']
+            if nms_type == 'circle':
                 ret_task = []
                 for i in range(bs):
                     boxes3d = predictions_dicts[i]['bboxes']
@@ -1031,50 +1039,47 @@ class CenterFormHead(BaseModule):
 
         for i, (box_preds, cls_preds, cls_labels) in enumerate(
                 zip(batch_reg_preds, batch_cls_preds, batch_cls_labels)):
+            selected = []
+            for cls in range(num_class_with_bg):
+                cls_mask = cls_labels == cls
+                if cls_mask.sum() > 0:
+                    sample_idx_per_cls = cls_mask.nonzero()[:, 0]
+                    box_preds_per_cls = box_preds[cls_mask]
+                    cls_preds_per_cls = cls_preds[cls_mask]
+                    cls_labels_per_cls = cls_labels[cls_mask]
 
-            # Apply NMS in bird eye view
+                    top_labels = cls_labels_per_cls.long()
+                    top_scores = cls_preds_per_cls.squeeze(-1)
 
-            # get the highest score per prediction, then apply nms
-            # to remove overlapped box.
-            if num_class_with_bg == 1:
-                top_scores = cls_preds.squeeze(-1)
-                top_labels = torch.zeros(
-                    cls_preds.shape[0],
-                    device=cls_preds.device,
-                    dtype=torch.long)
+                    # if self.test_cfg['score_threshold'] > 0.0:
+                    #     thresh = torch.tensor(
+                    #         [self.test_cfg['score_threshold']],
+                    #         device=cls_preds_per_cls.device).type_as(
+                    #             cls_preds_per_cls)
+                    #     top_scores_keep = top_scores >= thresh
+                    #     top_scores = top_scores.masked_select(top_scores_keep) # noqa: E501
 
-            else:
-                top_labels = cls_labels.long()
-                top_scores = cls_preds.squeeze(-1)
+                    # if top_scores.shape[0] != 0:
+                    boxes_for_nms = xywhr2xyxyr(img_metas[i]['box_type_3d'](
+                        box_preds_per_cls[:, :],
+                        self.bbox_coder.code_size).bev)
+                    # the nms in 3d detection just remove overlap boxes.
+                    selected_per_cls = nms_bev(
+                        boxes_for_nms,
+                        top_scores,
+                        thresh=self.test_cfg['nms_iou_thres'][cls],
+                        pre_max_size=self.test_cfg['nms_pre_max_size'][cls],
+                        post_max_size=self.test_cfg['nms_post_max_size'][cls])
+                    if len(selected_per_cls) > 0:
+                        selected.append(sample_idx_per_cls[selected_per_cls])
 
-            if self.test_cfg['score_threshold'] > 0.0:
-                thresh = torch.tensor(
-                    [self.test_cfg['score_threshold']],
-                    device=cls_preds.device).type_as(cls_preds)
-                top_scores_keep = top_scores >= thresh
-                top_scores = top_scores.masked_select(top_scores_keep)
-
-            if top_scores.shape[0] != 0:
-                if self.test_cfg['score_threshold'] > 0.0:
-                    box_preds = box_preds[top_scores_keep]
-                    top_labels = top_labels[top_scores_keep]
-                boxes_for_nms = xywhr2xyxyr(img_metas[i]['box_type_3d'](
-                    box_preds[:, :], self.bbox_coder.code_size).bev)
-                # the nms in 3d detection just remove overlap boxes.
-
-                selected = nms_bev(
-                    boxes_for_nms,
-                    top_scores,
-                    thresh=self.test_cfg['nms_thr'],
-                    pre_max_size=self.test_cfg['pre_max_size'],
-                    post_max_size=self.test_cfg['post_max_size'])
-            else:
-                selected = []
+            if len(selected) > 0:
+                selected = torch.cat(selected, dim=0)
 
             # if selected is not None:
             selected_boxes = box_preds[selected]
-            selected_labels = top_labels[selected]
-            selected_scores = top_scores[selected]
+            selected_labels = cls_labels[selected]
+            selected_scores = cls_preds[selected]
 
             # finally generate predictions.
             if selected_boxes.shape[0] != 0:
@@ -1084,20 +1089,22 @@ class CenterFormHead(BaseModule):
                 final_box_preds = box_preds
                 final_scores = scores
                 final_labels = label_preds
-                if post_center_range is not None:
-                    mask = (final_box_preds[:, :3] >=
-                            post_center_range[:3]).all(1)
-                    mask &= (final_box_preds[:, :3] <=
-                             post_center_range[3:]).all(1)
-                    predictions_dict = dict(
-                        bboxes=final_box_preds[mask],
-                        scores=final_scores[mask],
-                        labels=final_labels[mask])
-                else:
-                    predictions_dict = dict(
-                        bboxes=final_box_preds,
-                        scores=final_scores,
-                        labels=final_labels)
+                # TODO: `pose_center_range` here is repeated with that in the
+                # box decoder
+                # if post_center_range is not None:
+                #     mask = (final_box_preds[:, :3] >=
+                #             post_center_range[:3]).all(1)
+                #     mask &= (final_box_preds[:, :3] <=
+                #              post_center_range[3:]).all(1)
+                #     predictions_dict = dict(
+                #         bboxes=final_box_preds[mask],
+                #         scores=final_scores[mask],
+                #         labels=final_labels[mask])
+                # else:
+                predictions_dict = dict(
+                    bboxes=final_box_preds,
+                    scores=final_scores,
+                    labels=final_labels)
             else:
                 dtype = batch_reg_preds[0].dtype
                 device = batch_reg_preds[0].device

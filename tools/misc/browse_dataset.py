@@ -83,6 +83,7 @@ def build_data_cfg(config_path, aug, cfg_options):
                     show_pipeline.append(cfg.train_pipeline[i])
 
     train_data_cfg['pipeline'] = show_pipeline
+    train_data_cfg['ann_file'] = 'waymo_infos_val.pkl'
 
     return cfg
 
