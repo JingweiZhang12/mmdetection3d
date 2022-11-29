@@ -890,6 +890,8 @@ class CenterFormHead(BaseModule):
             batch_rot = torch.atan2(batch_rots,
                                     batch_rotc).transpose(2, 1).contiguous()
             batch_ious = preds_dict['iou'].transpose(2, 1).contiguous()
+            batch_ious = (batch_ious + 1) * 0.5
+            batch_ious = torch.clamp(batch_ious, min=0.0, max=1.0)
 
             ys, xs = torch.meshgrid([torch.arange(0, H), torch.arange(0, W)])
             ys = ys.view(1, H, W).repeat(bs, 1, 1).to(batch_heatmap)
@@ -935,7 +937,7 @@ class CenterFormHead(BaseModule):
                 ious = torch.pow(ious, iou_factor[labels])
 
                 boxes3d = final_box_preds[i, cmask]
-                scores = final_scores[i, cmask]  # * ious
+                scores = final_scores[i, cmask] * ious
                 labels = final_preds[i, cmask]
                 predictions_dict = {
                     'bboxes': boxes3d,
