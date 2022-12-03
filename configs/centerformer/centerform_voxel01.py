@@ -33,6 +33,7 @@ model = dict(
         in_channels=5,
         sparse_shape=[41, 1504, 1504],
         order=('conv', 'norm', 'act'),
+        norm_cfg=dict(type='naiveSyncBN1d'),
         encoder_channels=((16, 16, 32), (32, 32, 64), (64, 64, 128), (128,
                                                                       128)),
         encoder_paddings=((1, 1, 1), (1, 1, 1), (1, 1, [0, 1, 1]), (1, 1)),
@@ -149,21 +150,22 @@ test_pipeline = [
         load_dim=6,
         use_dim=5,
         file_client_args=file_client_args),
-    dict(
-        type='MultiScaleFlipAug3D',
-        img_scale=(1333, 800),
-        pts_scale_ratio=1,
-        flip=False,
-        transforms=[
-            dict(
-                type='GlobalRotScaleTrans',
-                rot_range=[0, 0],
-                scale_ratio_range=[1., 1.],
-                translation_std=[0, 0, 0]),
-            dict(type='RandomFlip3D'),
-            dict(
-                type='PointsRangeFilter', point_cloud_range=point_cloud_range)
-        ]),
+    dict(type='PointsRangeFilter', point_cloud_range=point_cloud_range),
+    # dict(
+    #     type='MultiScaleFlipAug3D',
+    #     img_scale=(1333, 800),
+    #     pts_scale_ratio=1,
+    #     flip=False,
+    #     transforms=[
+    #         dict(
+    #             type='GlobalRotScaleTrans',
+    #             rot_range=[0, 0],
+    #             scale_ratio_range=[1., 1.],
+    #             translation_std=[0, 0, 0]),
+    #         dict(type='RandomFlip3D'),
+    #         dict(
+    #             type='PointsRangeFilter', point_cloud_range=point_cloud_range)
+    #     ]),
     dict(type='Pack3DDetInputs', keys=['points'])
 ]
 
@@ -186,7 +188,7 @@ train_dataloader = dict(
         # and box_type_3d='Depth' in sunrgbd and scannet dataset.
         box_type_3d='LiDAR',
         # load one frame every five frames
-        load_interval=5,
+        load_interval=1,
         file_client_args=file_client_args))
 val_dataloader = dict(
     batch_size=1,

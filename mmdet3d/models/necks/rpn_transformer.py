@@ -423,16 +423,6 @@ class RPN_transformer_deformable(RPN_transformer_base):
         for data_sample in batch_data_samples:
             batch_gt_instance_3d.append(data_sample.gt_instances_3d)
 
-        heatmaps, anno_boxes, gt_inds, gt_masks, corner_heatmaps, cat_labels = self.get_targets(  # noqa: E501
-            batch_gt_instance_3d)
-        batch_targets = dict(
-            ind=gt_inds,
-            mask=gt_masks,
-            hm=heatmaps,
-            anno_box=anno_boxes,
-            corners=corner_heatmaps,
-            cat=cat_labels)
-
         # FPN
         x = self.blocks[0](x)
         x_down = self.blocks[1](x)
@@ -454,7 +444,16 @@ class RPN_transformer_deformable(RPN_transformer_base):
         self.batch_id = torch.from_numpy(np.indices(
             (batch, self.obj_num))[0]).to(labels)
 
-        if self.use_gt_training and self.hm_head.training:
+        if self.training:
+            heatmaps, anno_boxes, gt_inds, gt_masks, corner_heatmaps, cat_labels = self.get_targets(  # noqa: E501
+                batch_gt_instance_3d)
+            batch_targets = dict(
+                ind=gt_inds,
+                mask=gt_masks,
+                hm=heatmaps,
+                anno_box=anno_boxes,
+                corners=corner_heatmaps,
+                cat=cat_labels)
             inds = gt_inds[0][:, (self.window_size // 2)::self.window_size]
             masks = gt_masks[0][:, (self.window_size // 2)::self.window_size]
             batch_id_gt = torch.from_numpy(
@@ -466,6 +465,7 @@ class RPN_transformer_deformable(RPN_transformer_base):
         else:
             order = scores.sort(1, descending=True)[1]
             order = order[:, :self.obj_num]
+            batch_targets = None
 
         scores = torch.gather(scores, 1, order)
         labels = torch.gather(labels, 1, order)

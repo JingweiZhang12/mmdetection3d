@@ -13,11 +13,12 @@ import torch
 from mmcv.cnn import build_norm_layer
 from mmengine.logging import print_log
 from mmengine.model import kaiming_init
+from mmengine.structures import InstanceData
 from torch import nn
 
 from mmdet3d.models.losses import FastFocalLoss
 from mmdet3d.registry import MODELS
-from mmdet3d.structures import bbox_overlaps_3d
+from mmdet3d.structures import bbox_overlaps_3d, xywhr2xyxyr
 from ..layers import circle_nms, nms_bev
 
 
@@ -102,6 +103,7 @@ class CenterHeadIoU_1d(nn.Module):
                  iou_loss=False,
                  corner_loss=False,
                  iou_factor=[1, 1, 4],
+                 bbox_code_size=7,
                  test_cfg=None,
                  **kawrgs):
         super(CenterHeadIoU_1d, self).__init__()
@@ -109,6 +111,7 @@ class CenterHeadIoU_1d(nn.Module):
         num_classes = [len(t['class_names']) for t in tasks]
         self.class_names = [t['class_names'] for t in tasks]
         self.code_weights = code_weights
+        self.bbox_code_size = 7
         self.weight = weight  # weight between hm loss and loc loss
         self.iou_weight = iou_weight
         self.corner_weight = corner_weight
@@ -295,7 +298,7 @@ class CenterHeadIoU_1d(nn.Module):
         return losses
 
     @torch.no_grad()
-    def predict(self, preds_dicts, example, **kwargs):
+    def predict(self, preds_dicts, batch_input_metas, **kwargs):
         """decode, nms, then return the detection result.
 
         Additionally support double flip testing
@@ -321,10 +324,10 @@ class CenterHeadIoU_1d(nn.Module):
 
             batch_size = preds_dict['scores'].shape[0]
 
-            if 'metadata' not in example or len(example['metadata']) == 0:
-                meta_list = [None] * batch_size
-            else:
-                meta_list = example['metadata']
+            # if 'metadata' not in example or len(example['metadata']) == 0:
+            #     meta_list = [None] * batch_size
+            # else:
+            #     meta_list = example['metadata']
 
             batch_score = preds_dict['scores']
             batch_label = preds_dict['labels']
@@ -383,14 +386,14 @@ class CenterHeadIoU_1d(nn.Module):
                 batch_box_preds = torch.cat(
                     [xs, ys, batch_hei, batch_dim, batch_rot], dim=2)
 
-            metas.append(meta_list)
+            # metas.append(meta_list)
 
             if self.test_cfg.get('per_class_nms', False):
                 pass
             else:
                 rets.append(
                     self.post_processing(
-                        example,
+                        batch_input_metas,
                         batch_box_preds,
                         batch_score,
                         batch_label,
@@ -407,33 +410,34 @@ class CenterHeadIoU_1d(nn.Module):
 
         ret_list = []
         for i in range(num_samples):
-            ret = {}
+            temp_instances = InstanceData()
             for k in rets[0][i].keys():
-                if k in [
-                        'box3d_lidar',
-                        'scores',
-                        'selected_box_mask',
-                        'gt_scores',
-                        'selected',
-                        'selected_feat_ids',
-                ]:
-                    ret[k] = torch.cat([ret[i][k] for ret in rets])
-                elif k in ['label_preds']:
+                if k == 'bboxes':
+                    bboxes = torch.cat([ret[i][k] for ret in rets])
+                    bboxes[:, 2] = bboxes[:, 2] - bboxes[:, 5] * 0.5
+                    bboxes = batch_input_metas[i]['box_type_3d'](
+                        bboxes, self.bbox_code_size)
+                elif k == 'labels':
                     flag = 0
                     for j, num_class in enumerate(self.num_classes):
                         rets[j][i][k] += flag
                         flag += num_class
-                    ret[k] = torch.cat([ret[i][k] for ret in rets])
+                    labels = torch.cat([ret[i][k] for ret in rets])
+                elif k == 'scores':
+                    scores = torch.cat([ret[i][k] for ret in rets])
+            # ret['metadata'] = metas[0][i]
 
-            ret['metadata'] = metas[0][i]
-            ret_list.append(ret)
+            temp_instances.bboxes_3d = bboxes
+            temp_instances.scores_3d = scores
+            temp_instances.labels_3d = labels
+            ret_list.append(temp_instances)
 
         return ret_list
 
     @torch.no_grad()
     def post_processing(
         self,
-        example,
+        img_metas,
         batch_box_preds,
         batch_score,
         batch_label,
@@ -484,11 +488,14 @@ class CenterHeadIoU_1d(nn.Module):
                     class_mask = labels == c
                     if class_mask.sum() > 0:
                         class_idx = class_mask.nonzero()
+                        boxes_for_nms = xywhr2xyxyr(
+                            img_metas[i]['box_type_3d'](
+                                box_preds[:, :], self.bbox_code_size).bev)
                         select = nms_bev(
                             boxes_for_nms[class_mask].float(),
                             scores[class_mask].float(),
                             thresh=test_cfg.nms.nms_iou_threshold[c],
-                            pre_maxsize=test_cfg.nms.nms_pre_max_size[c],
+                            pre_max_size=test_cfg.nms.nms_pre_max_size[c],
                             post_max_size=test_cfg.nms.nms_post_max_size[c],
                         )
                         selected.append(class_idx[select, 0])
@@ -499,7 +506,7 @@ class CenterHeadIoU_1d(nn.Module):
                     boxes_for_nms.float(),
                     scores.float(),
                     thresh=test_cfg.nms.nms_iou_threshold,
-                    pre_maxsize=test_cfg.nms.nms_pre_max_size,
+                    pre_max_size=test_cfg.nms.nms_pre_max_size,
                     post_max_size=test_cfg.nms.nms_post_max_size,
                 )
 
@@ -508,9 +515,9 @@ class CenterHeadIoU_1d(nn.Module):
             selected_labels = labels[selected]
 
             prediction_dict = {
-                'box3d_lidar': selected_boxes,
+                'bboxes': selected_boxes,
                 'scores': selected_scores,
-                'label_preds': selected_labels,
+                'labels': selected_labels,
             }
 
             prediction_dicts.append(prediction_dict)

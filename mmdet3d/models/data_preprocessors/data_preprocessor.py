@@ -11,6 +11,7 @@ from mmengine.model import stack_batch
 from mmengine.utils import is_list_of
 from torch.nn import functional as F
 
+from mmdet3d.models.utils.scatter import scatter_mean
 from mmdet3d.registry import MODELS
 from mmdet3d.utils import OptConfigType
 from .utils import multiview_img_stack_batch
@@ -365,11 +366,16 @@ class Det3DDataPreprocessor(DetDataPreprocessor):
             voxel_dict['voxel_centers'] = voxel_centers
         elif self.voxel_type == 'dynamic':
             coors = []
+            ordered_points = []
             # dynamic voxelization only provide a coors mapping
             for res in points:
                 res_coors = self.voxel_layer(res)
+                res_coors, inverse_indices = res_coors.unique(
+                    return_inverse=True, dim=0)
+                res = scatter_mean(res, inverse_indices, dim=0)
                 coors.append(res_coors)
-            voxels = torch.cat(points, dim=0)
+                ordered_points.append(res)
+            voxels = torch.cat(ordered_points, dim=0)
             coors_batch = []
             for i, coor in enumerate(coors):
                 coor_pad = F.pad(coor, (1, 0), mode='constant', value=i)

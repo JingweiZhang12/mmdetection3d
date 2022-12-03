@@ -145,12 +145,10 @@ class CenterFormer(Base3DDetector):
         pts_feats = self.extract_feat(batch_inputs_dict, batch_input_metas)
         preds, batch_tatgets = self.backbone(pts_feats, batch_data_samples)
         preds = self.bbox_head(preds)
-        if self.training:
-            losses = dict()
-            losses.update(self.bbox_head.loss(preds, batch_tatgets))
-            return losses
-        else:
-            return self.bbox_head.predict(preds, batch_tatgets)
+        losses = dict()
+        losses.update(self.bbox_head.loss(preds, batch_tatgets))
+        return losses
+        # return self.bbox_head.predict(preds, batch_tatgets)
 
     def predict(self, batch_inputs_dict: Dict[str, Optional[Tensor]],
                 batch_data_samples: List[Det3DDataSample],
@@ -177,12 +175,10 @@ class CenterFormer(Base3DDetector):
         """
         batch_input_metas = [item.metainfo for item in batch_data_samples]
         pts_feats = self.extract_feat(batch_inputs_dict, batch_input_metas)
-        if pts_feats and self.with_bbox:
-            results_list_3d = self.bbox_head.predict(pts_feats,
-                                                     batch_data_samples,
-                                                     **kwargs)
-        else:
-            results_list_3d = None
+        preds, _ = self.backbone(pts_feats, batch_data_samples)
+
+        preds = self.bbox_head(preds)
+        results_list_3d = self.bbox_head.predict(preds, batch_input_metas)
 
         detsamples = self.add_pred_to_datasample(batch_data_samples,
                                                  results_list_3d)
