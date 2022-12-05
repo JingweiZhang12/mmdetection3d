@@ -33,7 +33,7 @@ model = dict(
         in_channels=5,
         sparse_shape=[41, 1504, 1504],
         order=('conv', 'norm', 'act'),
-        norm_cfg=dict(type='naiveSyncBN1d'),
+        norm_cfg=dict(type='naiveSyncBN1d', eps=0.001, momentum=0.01),
         encoder_channels=((16, 16, 32), (32, 32, 64), (64, 64, 128), (128,
                                                                       128)),
         encoder_paddings=((1, 1, 1), (1, 1, 1), (1, 1, [0, 1, 1]), (1, 1)),

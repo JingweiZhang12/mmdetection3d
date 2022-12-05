@@ -16,6 +16,7 @@ from mmengine.model import kaiming_init
 from mmengine.structures import InstanceData
 from torch import nn
 
+from mmdet3d.structures.bbox_3d.box_torch_ops import rotate_nms_pcdet
 from mmdet3d.models.losses import FastFocalLoss
 from mmdet3d.registry import MODELS
 from mmdet3d.structures import bbox_overlaps_3d, xywhr2xyxyr
@@ -488,14 +489,21 @@ class CenterHeadIoU_1d(nn.Module):
                     class_mask = labels == c
                     if class_mask.sum() > 0:
                         class_idx = class_mask.nonzero()
-                        boxes_for_nms = xywhr2xyxyr(
-                            img_metas[i]['box_type_3d'](
-                                box_preds[:, :], self.bbox_code_size).bev)
-                        select = nms_bev(
+                        # boxes_for_nms = xywhr2xyxyr(
+                        #     img_metas[i]['box_type_3d'](
+                        #         box_preds[:, :], self.bbox_code_size).bev)
+                        # select = nms_bev(
+                        #     boxes_for_nms[class_mask].float(),
+                        #     scores[class_mask].float(),
+                        #     thresh=test_cfg.nms.nms_iou_threshold[c],
+                        #     pre_max_size=test_cfg.nms.nms_pre_max_size[c],
+                        #     post_max_size=test_cfg.nms.nms_post_max_size[c],
+                        # )
+                        select = rotate_nms_pcdet(
                             boxes_for_nms[class_mask].float(),
                             scores[class_mask].float(),
                             thresh=test_cfg.nms.nms_iou_threshold[c],
-                            pre_max_size=test_cfg.nms.nms_pre_max_size[c],
+                            pre_maxsize=test_cfg.nms.nms_pre_max_size[c],
                             post_max_size=test_cfg.nms.nms_post_max_size[c],
                         )
                         selected.append(class_idx[select, 0])

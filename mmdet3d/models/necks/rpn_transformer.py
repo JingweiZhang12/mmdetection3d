@@ -433,10 +433,10 @@ class RPN_transformer_deformable(RPN_transformer_base):
 
         if self.corner and self.corner_head.training:
             corner_hm = self.corner_head(x_up)
-            corner_hm = self._sigmoid(corner_hm)
+            corner_hm = torch.sigmoid(corner_hm)
 
         # find top K center location
-        hm = self._sigmoid(hm)
+        hm = torch.sigmoid(hm)
         batch, num_cls, H, W = hm.size()
 
         scores, labels = torch.max(

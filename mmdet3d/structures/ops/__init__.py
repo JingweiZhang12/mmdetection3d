@@ -19,6 +19,7 @@ from .iou3d_calculator import (AxisAlignedBboxOverlaps3D, BboxOverlaps3D,
                                axis_aligned_bbox_overlaps_3d, bbox_overlaps_3d,
                                bbox_overlaps_nearest_3d)
 from .transforms import bbox3d2result, bbox3d2roi, bbox3d_mapping_back
+from . import iou3d_nms_cuda
 
 __all__ = [
     'box2d_to_corner_jit', 'box3d_to_bbox', 'box_camera_to_lidar',
@@ -34,5 +35,5 @@ __all__ = [
     'BboxOverlapsNearest3D', 'BboxOverlaps3D', 'bbox_overlaps_nearest_3d',
     'bbox_overlaps_3d', 'AxisAlignedBboxOverlaps3D',
     'axis_aligned_bbox_overlaps_3d', 'bbox3d_mapping_back', 'bbox3d2roi',
-    'bbox3d2result'
+    'bbox3d2result', 'iou3d_nms_cuda'
 ]
