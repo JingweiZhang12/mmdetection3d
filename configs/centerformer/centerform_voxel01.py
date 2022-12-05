@@ -102,7 +102,7 @@ model = dict(
         obj_num=1000,
     ))
 
-data_root = 'data/waymo_mini/kitti_format/'
+data_root = 'data/waymo/kitti_format/'
 db_sampler = dict(
     data_root=data_root,
     info_path=data_root + 'waymo_dbinfos_train.pkl',
@@ -289,4 +289,4 @@ test_cfg = dict()
 #   - `base_batch_size` = (4 GPUs) x (4 samples per GPU).
 auto_scale_lr = dict(enable=False, base_batch_size=16)
 
-default_hooks = dict(logger=dict(type='LoggerHook', interval=1))
+default_hooks = dict(logger=dict(type='LoggerHook', interval=50))
