@@ -596,11 +596,12 @@ class LoadPointsFromFile(BaseTransform):
                 - points (:obj:`BasePoints`): Point clouds data.
         """
         pts_file_path = results['lidar_points']['lidar_path']
-        # points = self._load_points(pts_file_path)
-        # points = points.reshape(-1, self.load_dim)
-        # points = points[:, self.use_dim]
-        print('------------------Load offline point-------------------------')
-        points = np.load('checkpoints/waymo_val_0_points.npy')
+        points = self._load_points(pts_file_path)
+        points = points.reshape(-1, self.load_dim)
+        points = points[:, self.use_dim]
+        points[:, 3] = np.tanh(points[:, 3])
+        # print('------------------Load offline point-------------------------')
+        # points = np.load('checkpoints/waymo_val_0_points.npy')
         attribute_dims = None
 
         if self.shift_height:
