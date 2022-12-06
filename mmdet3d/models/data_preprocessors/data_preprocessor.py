@@ -366,16 +366,11 @@ class Det3DDataPreprocessor(DetDataPreprocessor):
             voxel_dict['voxel_centers'] = voxel_centers
         elif self.voxel_type == 'dynamic':
             coors = []
-            ordered_points = []
             # dynamic voxelization only provide a coors mapping
             for res in points:
                 res_coors = self.voxel_layer(res)
-                res_coors, inverse_indices = res_coors.unique(
-                    return_inverse=True, dim=0)
-                res = scatter_mean(res, inverse_indices, dim=0)
                 coors.append(res_coors)
-                ordered_points.append(res)
-            voxels = torch.cat(ordered_points, dim=0)
+            voxels = torch.cat(points, dim=0)
             coors_batch = []
             for i, coor in enumerate(coors):
                 coor_pad = F.pad(coor, (1, 0), mode='constant', value=i)

@@ -174,7 +174,7 @@ train_dataloader = dict(
     batch_size=4,
     num_workers=4,
     persistent_workers=True,
-    sampler=dict(type='DefaultSampler', shuffle=True),
+    sampler=dict(type='DefaultSampler', shuffle=False),
     dataset=dict(
         type=dataset_type,
         data_root=data_root,
@@ -290,3 +290,4 @@ test_cfg = dict()
 auto_scale_lr = dict(enable=False, base_batch_size=16)
 
 default_hooks = dict(logger=dict(type='LoggerHook', interval=50))
+load_from = 'checkpoints/init_centerformer_converted.pth'

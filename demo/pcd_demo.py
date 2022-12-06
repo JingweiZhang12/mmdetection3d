@@ -35,7 +35,7 @@ def main(args):
     register_all_modules()
     import numpy as np
     import random
-    seed=1
+    seed = 1
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -50,8 +50,8 @@ def main(args):
     model = init_model(args.config, args.checkpoint, device=args.device)
 
     # init visualizer
-    # visualizer = VISUALIZERS.build(model.cfg.visualizer)
-    # visualizer.dataset_meta = model.dataset_meta
+    visualizer = VISUALIZERS.build(model.cfg.visualizer)
+    visualizer.dataset_meta = model.dataset_meta
 
     # test a single point cloud sample
     result, data = inference_detector(model, args.pcd)
@@ -59,16 +59,16 @@ def main(args):
     data_input = dict(points=points)
 
     # show the results
-    # visualizer.add_datasample(
-    #     'result',
-    #     data_input,
-    #     data_sample=result,
-    #     draw_gt=False,
-    #     show=True,
-    #     wait_time=0,
-    #     out_file=args.out_dir,
-    #     pred_score_thr=args.score_thr,
-    #     vis_task='lidar_det')
+    visualizer.add_datasample(
+        'result',
+        data_input,
+        data_sample=result,
+        draw_gt=False,
+        show=True,
+        wait_time=0,
+        out_file=args.out_dir,
+        pred_score_thr=args.score_thr,
+        vis_task='lidar_det')
 
 
 if __name__ == '__main__':
