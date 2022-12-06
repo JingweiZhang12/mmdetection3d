@@ -416,7 +416,10 @@ class CenterHeadIoU_1d(nn.Module):
                 if k == 'bboxes':
                     bboxes = torch.cat([ret[i][k] for ret in rets])
                     bboxes[:, 2] = bboxes[:, 2] - bboxes[:, 5] * 0.5
-                    bboxes = bboxes.transpose(4, 3).contiguous()
+                    # The original CenterFormer model predict (..., w,l,h)
+                    bboxes[:, 4], bboxes[:, 3] = bboxes[:, 3].clone(
+                    ), bboxes[:, 4].clone()
+                    bboxes[:, 6] = -bboxes[:, 6] - np.pi / 2
                     bboxes = batch_input_metas[i]['box_type_3d'](
                         bboxes, self.bbox_code_size)
                 elif k == 'labels':

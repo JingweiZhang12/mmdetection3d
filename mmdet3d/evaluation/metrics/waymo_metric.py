@@ -243,9 +243,11 @@ class WaymoMetric(KittiMetric):
             for idx, key in enumerate(ap_dict.keys()):
                 split_idx = int(idx / 2) + 1
                 if idx % 2 == 0:  # mAP
-                    ap_dict[key] = float(mAP_splits[split_idx].split(']')[0])
+                    ap_dict[key] = torch.tensor(
+                        float(mAP_splits[split_idx].split(']')[0]))
                 else:  # mAPH
-                    ap_dict[key] = float(mAPH_splits[split_idx].split(']')[0])
+                    ap_dict[key] = torch.tensor(
+                        float(mAPH_splits[split_idx].split(']')[0]))
             ap_dict['Overall/L1 mAP'] = \
                 (ap_dict['Vehicle/L1 mAP'] + ap_dict['Pedestrian/L1 mAP'] +
                     ap_dict['Cyclist/L1 mAP']) / 3
@@ -291,11 +293,14 @@ class WaymoMetric(KittiMetric):
             for idx, key in enumerate(ap_dict.keys()):
                 split_idx = int(idx / 3) + 1
                 if idx % 3 == 0:  # mAPL
-                    ap_dict[key] = float(mAPL_splits[split_idx].split(']')[0])
+                    ap_dict[key] = torch.tensor(
+                        float(mAPL_splits[split_idx].split(']')[0]))
                 elif idx % 3 == 1:  # mAP
-                    ap_dict[key] = float(mAP_splits[split_idx].split(']')[0])
+                    ap_dict[key] = torch.tensor(
+                        float(mAP_splits[split_idx].split(']')[0]))
                 else:  # mAPH
-                    ap_dict[key] = float(mAPH_splits[split_idx].split(']')[0])
+                    ap_dict[key] = torch.tensor(
+                        float(mAPH_splits[split_idx].split(']')[0]))
             ap_dict['Overall mAPL'] = \
                 (ap_dict['Vehicle mAPL'] + ap_dict['Pedestrian mAPL'] +
                     ap_dict['Cyclist mAPL']) / 3
