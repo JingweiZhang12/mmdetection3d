@@ -266,9 +266,11 @@ class CenterHeadIoU_1d(nn.Module):
                         preds_dict['hm'].shape[3],
                     )
                     iou_targets = bbox_overlaps_3d(
-                        preds_box.reshape(-1, 7), cur_gt.reshape(
-                            -1, 7))[range(preds_box.reshape(-1, 7).shape[0]),
-                                    range(cur_gt.reshape(-1, 7).shape[0]), ]
+                        preds_box.reshape(-1, 7),
+                        cur_gt.reshape(-1, 7),
+                        coordinate='lidar')[
+                            range(preds_box.reshape(-1, 7).shape[0]),
+                            range(cur_gt.reshape(-1, 7).shape[0])]
                     iou_targets[torch.isnan(iou_targets)] = 0
                     iou_targets = 2 * iou_targets - 1
                 iou_loss = self.crit_iou(preds_dict['iou'].reshape(-1),
@@ -417,9 +419,11 @@ class CenterHeadIoU_1d(nn.Module):
                     bboxes = torch.cat([ret[i][k] for ret in rets])
                     bboxes[:, 2] = bboxes[:, 2] - bboxes[:, 5] * 0.5
                     # The original CenterFormer model predict (..., w,l,h)
-                    bboxes[:, 4], bboxes[:, 3] = bboxes[:, 3].clone(
-                    ), bboxes[:, 4].clone()
-                    bboxes[:, 6] = -bboxes[:, 6] - np.pi / 2
+                    # Note that this is used to align the precision of
+                    # converted model
+                    # bboxes[:, 4], bboxes[:, 3] = bboxes[:, 3].clone(
+                    # ), bboxes[:, 4].clone()
+                    # bboxes[:, 6] = -bboxes[:, 6] - np.pi / 2
                     bboxes = batch_input_metas[i]['box_type_3d'](
                         bboxes, self.bbox_code_size)
                 elif k == 'labels':
@@ -570,6 +574,7 @@ def get_box(pred_boxs, order, test_cfg, H, W):
     pred = torch.cat(
         [xs, ys, pred_boxs[:, 2:3],
          torch.exp(pred_boxs[:, 3:6]), rot], dim=1)
+    pred[:, 2] = pred[:, 2] - pred[:, 5] / 2
 
     return torch.transpose(pred, 1, 2).contiguous()  # B M 7
 
@@ -599,6 +604,10 @@ def get_box_gt(gt_boxs, order, test_cfg, H, W):
 
     batch_box_targets = torch.cat(
         [xs, ys, batch_gt_hei, batch_gt_dim, batch_gt_rot], dim=-1)
+
+    batch_box_targets[:,
+                      2] = batch_box_targets[:,
+                                             2] - batch_box_targets[:, 5] / 2
 
     return batch_box_targets  # B M 7
 

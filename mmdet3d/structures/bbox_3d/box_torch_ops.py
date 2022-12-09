@@ -259,8 +259,8 @@ def rotate_nms_pcdet(boxes,
     :return:
     """
     # transform back to pcdet's coordinate
-    boxes = boxes[:, [0, 1, 2, 4, 3, 5, -1]]
-    boxes[:, -1] = -boxes[:, -1] - np.pi / 2
+    # boxes = boxes[:, [0, 1, 2, 4, 3, 5, -1]]
+    # boxes[:, -1] = -boxes[:, -1] - np.pi / 2
 
     order = scores.sort(0, descending=True)[1]
     if pre_maxsize is not None:

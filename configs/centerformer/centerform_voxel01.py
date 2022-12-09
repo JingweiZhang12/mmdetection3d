@@ -174,7 +174,7 @@ train_dataloader = dict(
     batch_size=4,
     num_workers=4,
     persistent_workers=True,
-    sampler=dict(type='DefaultSampler', shuffle=False),
+    sampler=dict(type='DefaultSampler', shuffle=True),
     dataset=dict(
         type=dataset_type,
         data_root=data_root,
@@ -188,7 +188,7 @@ train_dataloader = dict(
         # and box_type_3d='Depth' in sunrgbd and scannet dataset.
         box_type_3d='LiDAR',
         # load one frame every five frames
-        load_interval=1,
+        load_interval=5,
         file_client_args=file_client_args))
 val_dataloader = dict(
     batch_size=1,
@@ -228,7 +228,7 @@ visualizer = dict(
 # interval to be 20. Please change the interval accordingly if you do not
 # use a default schedule.
 # optimizer
-lr = 3e-3
+lr = 3e-4
 # This schedule is mainly used by models on nuScenes dataset
 # max_norm=10 is better for SECOND
 optim_wrapper = dict(
@@ -279,7 +279,7 @@ param_scheduler = [
 ]
 
 # runtime settings
-train_cfg = dict(by_epoch=True, max_epochs=20, val_interval=21)
+train_cfg = dict(by_epoch=True, max_epochs=20, val_interval=20)
 val_cfg = dict()
 test_cfg = dict()
 
@@ -289,5 +289,9 @@ test_cfg = dict()
 #   - `base_batch_size` = (4 GPUs) x (4 samples per GPU).
 auto_scale_lr = dict(enable=False, base_batch_size=16)
 
-default_hooks = dict(logger=dict(type='LoggerHook', interval=50))
-load_from = 'checkpoints/init_centerformer_converted.pth'
+default_hooks = dict(logger=dict(
+    type='LoggerHook',
+    interval=50,
+))
+custom_hooks = [dict(type='DisableObjectSampleHook', disable_after_epoch=15)]
+load_from = None
