@@ -19,21 +19,23 @@ from torch import nn
 from mmdet3d.structures.bbox_3d.box_torch_ops import rotate_nms_pcdet
 from mmdet3d.models.losses import FastFocalLoss
 from mmdet3d.registry import MODELS
-from mmdet3d.structures import bbox_overlaps_3d, xywhr2xyxyr
+from mmdet3d.structures import bbox_overlaps_3d
+from mmdet3d.structures.ops.iou3d_calculator import boxes_iou3d_gpu_pcdet
 from ..layers import circle_nms, nms_bev
 
 
 class SepHead(nn.Module):
 
     def __init__(
-        self,
-        in_channels,
-        heads,
-        head_conv=64,
-        final_kernel=1,
-        bn=False,
-        init_bias=-2.19,
-        **kwargs,
+            self,
+            in_channels,
+            heads,
+            head_conv=64,
+            final_kernel=1,
+            bn=False,
+            init_bias=-2.19,
+            norm_cfg=dict(type='BN', eps=1e-3, momentum=0.01),
+            **kwargs,
     ):
         super(SepHead, self).__init__(**kwargs)
 
@@ -53,8 +55,7 @@ class SepHead(nn.Module):
                         bias=True,
                     ))
                 if bn:
-                    fc.append(
-                        build_norm_layer(dict(type='BN1d'), head_conv)[1])
+                    fc.append(build_norm_layer(norm_cfg, head_conv)[1])
                 fc.append(nn.ReLU())
 
             fc.append(
@@ -104,6 +105,7 @@ class CenterHeadIoU_1d(nn.Module):
                  iou_loss=False,
                  corner_loss=False,
                  iou_factor=[1, 1, 4],
+                 norm_cfg=dict(type='BN1d', eps=1e-3, momentum=0.01),
                  bbox_code_size=7,
                  test_cfg=None,
                  **kawrgs):
@@ -144,7 +146,7 @@ class CenterHeadIoU_1d(nn.Module):
         self.shared_conv = nn.Sequential(
             nn.Conv1d(
                 in_channels, share_conv_channel, kernel_size=1, bias=True),
-            build_norm_layer(dict(type='BN1d'), share_conv_channel)[1],
+            build_norm_layer(norm_cfg, share_conv_channel)[1],
             nn.ReLU(inplace=True),
         )
 
@@ -160,7 +162,7 @@ class CenterHeadIoU_1d(nn.Module):
                     bn=True,
                     init_bias=init_bias,
                     final_kernel=1,
-                ))
+                    norm_cfg=norm_cfg))
 
         logger.info('Finish CenterHeadIoU Initialization')
 
@@ -265,12 +267,19 @@ class CenterHeadIoU_1d(nn.Module):
                         preds_dict['hm'].shape[2],
                         preds_dict['hm'].shape[3],
                     )
-                    iou_targets = bbox_overlaps_3d(
-                        preds_box.reshape(-1, 7),
-                        cur_gt.reshape(-1, 7),
-                        coordinate='lidar')[
-                            range(preds_box.reshape(-1, 7).shape[0]),
-                            range(cur_gt.reshape(-1, 7).shape[0])]
+                    # iou_targets = bbox_overlaps_3d(
+                    #     preds_box.reshape(-1, 7),
+                    #     cur_gt.reshape(-1, 7),
+                    #     coordinate='lidar')[
+                    #         range(preds_box.reshape(-1, 7).shape[0]),
+                    #         range(cur_gt.reshape(-1, 7).shape[0])]
+
+                    preds_box[:, :, 2] += preds_box[:, :, 5] / 2
+                    cur_gt[:, :, 2] += cur_gt[:, :, 5] / 2
+                    iou_targets = boxes_iou3d_gpu_pcdet(
+                        preds_box.reshape(-1, 7), cur_gt.reshape(
+                            -1, 7))[range(preds_box.reshape(-1, 7).shape[0]),
+                                    range(cur_gt.reshape(-1, 7).shape[0])]
                     iou_targets[torch.isnan(iou_targets)] = 0
                     iou_targets = 2 * iou_targets - 1
                 iou_loss = self.crit_iou(preds_dict['iou'].reshape(-1),
@@ -605,9 +614,9 @@ def get_box_gt(gt_boxs, order, test_cfg, H, W):
     batch_box_targets = torch.cat(
         [xs, ys, batch_gt_hei, batch_gt_dim, batch_gt_rot], dim=-1)
 
-    batch_box_targets[:,
-                      2] = batch_box_targets[:,
-                                             2] - batch_box_targets[:, 5] / 2
+    batch_box_targets[...,
+                      2] = batch_box_targets[...,
+                                             2] - batch_box_targets[..., 5] / 2
 
     return batch_box_targets  # B M 7
 

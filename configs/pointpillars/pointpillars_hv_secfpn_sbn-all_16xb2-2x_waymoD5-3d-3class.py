@@ -4,3 +4,5 @@ _base_ = [
     '../_base_/schedules/schedule-2x.py',
     '../_base_/default_runtime.py',
 ]
+
+auto_scale_lr = dict(enable=True, base_batch_size=32)

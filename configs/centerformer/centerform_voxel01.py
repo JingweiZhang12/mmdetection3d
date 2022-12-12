@@ -48,6 +48,7 @@ model = dict(
         corner=True,
         assign_label_window_size=1,
         obj_num=500,
+        norm_cfg=dict(type='SyncBN', eps=1e-3, momentum=0.01),
         transformer_config=dict(
             depth=2,
             heads=6,
@@ -67,6 +68,7 @@ model = dict(
         corner_loss=True,
         iou_loss=True,
         assign_label_window_size=1,
+        norm_cfg=dict(type='SyncBN', eps=1e-3, momentum=0.01),
         code_weights=[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
         common_heads={
             'reg': (2, 2),
@@ -289,9 +291,11 @@ test_cfg = dict()
 #   - `base_batch_size` = (4 GPUs) x (4 samples per GPU).
 auto_scale_lr = dict(enable=False, base_batch_size=16)
 
-default_hooks = dict(logger=dict(
-    type='LoggerHook',
-    interval=50,
-))
+default_hooks = dict(
+    logger=dict(
+        type='LoggerHook',
+        interval=50,
+    ),
+    checkpoint=dict(type='CheckpointHook', interval=5))
 custom_hooks = [dict(type='DisableObjectSampleHook', disable_after_epoch=15)]
-load_from = None
+load_from = 'checkpoints/init_centerformer_converted.pth'
