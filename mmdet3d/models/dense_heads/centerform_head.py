@@ -5,6 +5,7 @@ from typing import Dict, List, Optional, Tuple, Union
 import numpy as np
 import torch
 from mmcv.cnn import Conv2d, ConvModule
+from mmcv.ops import boxes_iou3d
 from mmdet.models.utils import multi_apply
 from mmengine.model import BaseModule
 from mmengine.structures import InstanceData
@@ -13,8 +14,8 @@ from torch.nn import Conv1d
 
 from mmdet3d.models.utils import draw_heatmap_gaussian, gaussian_radius
 from mmdet3d.registry import MODELS, TASK_UTILS
-from mmdet3d.structures import (Det3DDataSample, bbox_overlaps_3d,
-                                center_to_corner_box2d, xywhr2xyxyr)
+from mmdet3d.structures import (Det3DDataSample, center_to_corner_box2d,
+                                xywhr2xyxyr)
 from ..layers import circle_nms, nms_bev
 
 
@@ -240,7 +241,7 @@ class CenterFormHead(BaseModule):
                 - list[torch.Tensor]: Masks indicating which
                     boxes are valid.
         """
-        heatmaps, anno_boxes, inds, masks, corner_heatmaps = multi_apply(
+        heatmaps, anno_boxes, inds, masks, corner_heatmaps, cat_labels = multi_apply(
             self.get_targets_single, batch_gt_instances_3d)
         # Transpose heatmaps
         heatmaps = list(map(list, zip(*heatmaps)))
@@ -257,7 +258,10 @@ class CenterFormHead(BaseModule):
         # Transpose inds
         masks = list(map(list, zip(*masks)))
         masks = [torch.stack(masks_) for masks_ in masks]
-        return heatmaps, anno_boxes, inds, masks, corner_heatmaps
+        # Transpose cat_labels
+        cat_labels = list(map(list, zip(*cat_labels)))
+        cat_labels = [torch.stack(labels_) for labels_ in cat_labels]
+        return heatmaps, anno_boxes, inds, masks, corner_heatmaps, cat_labels
 
     def get_targets_single(self,
                            gt_instances_3d: InstanceData) -> Tuple[Tensor]:
@@ -316,7 +320,7 @@ class CenterFormHead(BaseModule):
             task_classes.append(torch.cat(task_class).long().to(device))
             flag2 += len(mask)
         draw_gaussian = draw_heatmap_gaussian
-        heatmaps, anno_boxes, inds, masks, corner_heatmaps = [], [], [], [], []
+        heatmaps, anno_boxes, inds, masks, corner_heatmaps, cat_labels = [], [], [], [], [], []
 
         for idx, task_head in enumerate(self.task_heads):
             heatmap = gt_bboxes_3d.new_zeros(
@@ -332,6 +336,7 @@ class CenterFormHead(BaseModule):
 
             ind = gt_labels_3d.new_zeros((max_objs), dtype=torch.int64)
             mask = gt_bboxes_3d.new_zeros((max_objs), dtype=torch.uint8)
+            cat_label = gt_bboxes_3d.new_zeros((max_objs), dtype=torch.int64)
 
             num_objs = min(task_boxes[idx].shape[0], max_objs)
 
@@ -414,6 +419,7 @@ class CenterFormHead(BaseModule):
 
                     ind[new_idx] = y * feature_map_size[0] + x
                     mask[new_idx] = 1
+                    cat_label[new_idx] = cls_id
                     # TODO: support other outdoor dataset
                     # vx, vy = task_boxes[idx][k][7:]
                     rot = task_boxes[idx][k][6]
@@ -432,7 +438,8 @@ class CenterFormHead(BaseModule):
             anno_boxes.append(anno_box)
             masks.append(mask)
             inds.append(ind)
-        return heatmaps, anno_boxes, inds, masks, corner_heatmaps
+            cat_labels.append(cat_label)
+        return heatmaps, anno_boxes, inds, masks, corner_heatmaps, cat_labels
 
     def loss(self, pts_feats: List[Tensor],
              batch_data_samples: List[Det3DDataSample], *args,
@@ -459,7 +466,7 @@ class CenterFormHead(BaseModule):
             batch_gt_instance_3d.append(data_sample.gt_instances_3d)
         # masks: list[torch.Tensor], len(masks)==num_task_heads,
         # Tensor.shape=(batch, max_obj)
-        heatmaps, anno_boxes, gt_inds, gt_masks, corner_heatmaps = self.get_targets(  # noqa: E501
+        heatmaps, anno_boxes, gt_inds, gt_masks, corner_heatmaps, cat_labels = self.get_targets(  # noqa: E501
             batch_gt_instance_3d)
 
         batch, num_cls, H, W = outs['center_heatmap'].size()
@@ -555,7 +562,7 @@ class CenterFormHead(BaseModule):
         # TODO: check labels
         anno_boxes, selected_mask, _ = self.get_corresponding_box(
             order, gt_inds[0], gt_masks[0],
-            labels[:, :self.num_center_proposals], anno_boxes[0])
+            cat_labels[:, :self.num_center_proposals], anno_boxes[0])
 
         losses = self.loss_by_feat([outs], batch_gt_instance_3d, heatmaps,
                                    corner_heatmaps, [anno_boxes],
@@ -623,7 +630,7 @@ class CenterFormHead(BaseModule):
             gt_bboxes = gt_bboxes.reshape(-1, 7)
 
             # TODO: check it
-            iou_targets = bbox_overlaps_3d(
+            iou_targets = boxes_iou3d(
                 decoded_pred_bboxes,
                 gt_bboxes)[range(decoded_pred_bboxes.shape[0]),
                            range(gt_bboxes.shape[0])]
