@@ -67,6 +67,7 @@ class CenterForm(Base3DDetector):
         self.test_cfg = test_cfg
 
     def init_weights(self):
+        super().init_weights()
         for m in self.modules():
             if isinstance(m, _BatchNorm):
                 torch.nn.init.uniform_(m.weight)

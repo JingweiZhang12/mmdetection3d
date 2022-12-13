@@ -90,6 +90,8 @@ class SeparateHead(BaseModule):
         super().init_weights()
         for head in self.heads:
             if 'heatmap' in head:
+                import pdb
+                pdb.set_trace()
                 self.__getattr__(head)[-1].bias.data.fill_(self.init_bias)
 
     def forward(self, x):
