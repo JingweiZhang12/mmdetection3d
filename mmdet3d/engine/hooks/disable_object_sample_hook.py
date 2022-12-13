@@ -1,9 +1,10 @@
-from mmdet3d.registry import HOOKS
-from mmdet3d.datasets.transforms import ObjectSample
-
+# Copyright (c) OpenMMLab. All rights reserved.
 from mmengine.hooks import Hook
 from mmengine.model import is_model_wrapper
 from mmengine.runner import Runner
+
+from mmdet3d.datasets.transforms import ObjectSample
+from mmdet3d.registry import HOOKS
 
 
 @HOOKS.register_module()

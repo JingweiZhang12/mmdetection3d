@@ -298,4 +298,6 @@ default_hooks = dict(
     ),
     checkpoint=dict(type='CheckpointHook', interval=5))
 custom_hooks = [dict(type='DisableObjectSampleHook', disable_after_epoch=15)]
-load_from = 'checkpoints/init_centerformer_converted.pth'
+# load_from = 'checkpoints/init_centerformer_converted.pth'
+# load_from = 'checkpoints/centerformer_our_init.pth'
+load_from = None

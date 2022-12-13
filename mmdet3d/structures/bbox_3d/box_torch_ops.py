@@ -1,9 +1,11 @@
+# Copyright (c) OpenMMLab. All rights reserved.
 import math
 from functools import reduce
 
 import numpy as np
 import torch
 from torch import stack as tstack
+
 try:
     from ..ops import iou3d_nms_cuda
 except:
@@ -25,8 +27,7 @@ def torch_to_np_dtype(ttype):
 
 
 def corners_nd(dims, origin=0.5):
-    """generate relative box corners based on length per dim and
-    origin point.
+    """generate relative box corners based on length per dim and origin point.
 
     Args:
         dims (float array, shape=[N, ndim]): array of length per dim
@@ -62,8 +63,8 @@ def corners_nd(dims, origin=0.5):
 
 
 def corners_2d(dims, origin=0.5):
-    """generate relative 2d box corners based on length per dim and
-    origin point.
+    """generate relative 2d box corners based on length per dim and origin
+    point.
 
     Args:
         dims (float array, shape=[N, 2]): array of length per dim
@@ -113,9 +114,9 @@ def rotation_3d_in_axis(points, angles, axis=0):
             tstack([ones, zeros, zeros]),
         ])
     else:
-        raise ValueError("axis should in range")
+        raise ValueError('axis should in range')
     # print(points.shape, rot_mat_T.shape)
-    return torch.einsum("aij,jka->aik", points, rot_mat_T)
+    return torch.einsum('aij,jka->aik', points, rot_mat_T)
 
 
 def rotate_points_along_z(points, angle):
@@ -152,7 +153,7 @@ def rotation_2d(points, angles):
     rot_mat_T = torch.stack(
         [tstack([rot_cos, -rot_sin]),
          tstack([rot_sin, rot_cos])])
-    return torch.einsum("aij,jka->aik", (points, rot_mat_T))
+    return torch.einsum('aij,jka->aik', (points, rot_mat_T))
 
 
 def center_to_corner_box3d(centers,
@@ -160,7 +161,7 @@ def center_to_corner_box3d(centers,
                            angles,
                            origin=(0.5, 0.5, 0.5),
                            axis=1):
-    """convert kitti locations, dimensions and angles to corners
+    """convert kitti locations, dimensions and angles to corners.
 
     Args:
         centers (float array, shape=[N, 3]): locations in kitti label file.
@@ -183,7 +184,7 @@ def center_to_corner_box3d(centers,
 
 
 def center_to_corner_box2d(centers, dims, angles=None, origin=0.5):
-    """convert kitti locations, dimensions and angles to corners
+    """convert kitti locations, dimensions and angles to corners.
 
     Args:
         centers (float array, shape=[N, 2]): locations in kitti label file.
