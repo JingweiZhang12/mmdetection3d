@@ -86,14 +86,14 @@ model = dict(
         downsample=2),
     pts_voxel_encoder=dict(type='HardSimpleVFE', num_features=5),
     pts_middle_encoder=dict(
-        type='BEVFusionSparseEncoder',
+        type='SparseEncoder',
         in_channels=5,
-        sparse_shape=[1440, 1440, 41],
+        sparse_shape=[41, 1440, 1440],
         order=('conv', 'norm', 'act'),
         norm_cfg=dict(type='SyncBN', eps=0.001, momentum=0.01),
         encoder_channels=((16, 16, 32), (32, 32, 64), (64, 64, 128), (128,
                                                                       128)),
-        encoder_paddings=((0, 0, 1), (0, 0, 1), (0, 0, (1, 1, 0)), (0, 0)),
+        encoder_paddings=((0, 0, 1), (0, 0, 1), (0, 0, (0, 1, 1)), (0, 0)),
         block_type='basicblock'),
     fusion_layer=dict(
         type='ConvFuser', in_channels=[80, 256], out_channels=256),

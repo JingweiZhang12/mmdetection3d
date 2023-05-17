@@ -704,8 +704,8 @@ class TransFusionHead(nn.Module):
         heatmap = gt_bboxes_3d.new_zeros(self.num_classes, feature_map_size[1],
                                          feature_map_size[0])
         for idx in range(len(gt_bboxes_3d)):
-            width = gt_bboxes_3d[idx][3]
-            length = gt_bboxes_3d[idx][4]
+            length = gt_bboxes_3d[idx][3]
+            width = gt_bboxes_3d[idx][4]
             width = width / voxel_size[0] / self.train_cfg['out_size_factor']
             length = length / voxel_size[1] / self.train_cfg['out_size_factor']
             if width > 0 and length > 0:
@@ -724,12 +724,8 @@ class TransFusionHead(nn.Module):
                                       dtype=torch.float32,
                                       device=device)
                 center_int = center.to(torch.int32)
-
-                # original
-                # draw_heatmap_gaussian(heatmap[gt_labels_3d[idx]], center_int, radius) # noqa: E501
-                # NOTE: fix
-                draw_heatmap_gaussian(heatmap[gt_labels_3d[idx]],
-                                      center_int[[1, 0]], radius)
+                draw_heatmap_gaussian(heatmap[gt_labels_3d[idx]], center_int,
+                                      radius)
 
         mean_iou = ious[pos_inds].sum() / max(len(pos_inds), 1)
         return (

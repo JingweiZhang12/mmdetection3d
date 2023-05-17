@@ -5,6 +5,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import torch
 import torch.distributed as dist
+from mmcv.ops import Voxelization
 from mmengine.utils import is_list_of
 from torch import Tensor
 from torch.nn import functional as F
@@ -13,7 +14,6 @@ from mmdet3d.models import Base3DDetector
 from mmdet3d.registry import MODELS
 from mmdet3d.structures import Det3DDataSample
 from mmdet3d.utils import OptConfigType, OptMultiConfig, OptSampleList
-from .ops import Voxelization
 
 
 @MODELS.register_module()
